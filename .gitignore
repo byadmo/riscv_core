@@ -1,0 +1,12 @@
+# Simulation artifacts
+*.vvp
+*.vcd
+wave.vcd
+
+# Editor/OS
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Build
+build/

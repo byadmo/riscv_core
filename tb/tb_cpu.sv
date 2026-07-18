@@ -11,12 +11,16 @@ module tb_cpu();
 
     initial begin
         $display("Starting CPU TB");
+        // create VCD for GTKWave/inspection
+        $dumpfile("wave.vcd");
+        $dumpvars(0, tb_cpu);
+
         // release reset after a few cycles
         repeat (2) @(posedge clk);
         reset = 0;
 
-        // run for 12 cycles
-        for (int i = 0; i < 12; i++) begin
+        // run for 50 cycles
+        for (int i = 0; i < 50; i++) begin
             @(posedge clk);
             $display("Cycle %0d PC=%08x instr=%08x x1=%08x x2=%08x x3=%08x", i, u_cpu.pc, u_cpu.instr, u_cpu.u_regfile.regs[1], u_cpu.u_regfile.regs[2], u_cpu.u_regfile.regs[3]);
         end
