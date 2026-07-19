@@ -79,3 +79,8 @@ Each synthesizable module should have a self-checking testbench. Phase 1 verific
 - Register file checks for write/read behavior and `x0` hardwire behavior.
 - Decode checks for R-type, I-type, load/store, and branch controls.
 - Pipeline-level directed tests for stalls, forwarding, and branch flushes.
+
+
+## Implementation status
+Implemented subset: ADD,SUB,XOR,SLL,ADDI,LW,SW,BEQ. RTL and basic testbenches added.
+
