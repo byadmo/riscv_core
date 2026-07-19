@@ -19,6 +19,8 @@ module pipeline_core(
     logic [31:0] id_rd1, id_rd2, id_imm;
     logic id_reg_write, id_is_load, id_is_store, id_is_branch;
     logic [3:0] id_alu_op;
+    // control signals not directly consumed elsewhere
+    logic alu_src_b_sig, mem_to_reg_sig;
 
     // ID/EX regs
     logic [31:0] id_ex_pc, id_ex_rd1, id_ex_rd2, id_ex_imm;
@@ -64,14 +66,30 @@ module pipeline_core(
         end
     end
 
-    // ID: simple decode - reuse control unit
+    // ID: decode - extract fields and immediates for all formats, then invoke control unit
     assign id_rs1 = if_id_instr[19:15];
     assign id_rs2 = if_id_instr[24:20];
     assign id_rd  = if_id_instr[11:7];
-    assign id_imm = {{20{if_id_instr[31]}}, if_id_instr[31:20]}; // I-type for simplicity
+
+    // compute immediates inside a comb block to avoid extra top-level declarations
+    always_comb begin
+        logic [31:0] imm_i = {{20{if_id_instr[31]}}, if_id_instr[31:20]};
+        logic [31:0] imm_s = {{20{if_id_instr[31]}}, if_id_instr[31:25], if_id_instr[11:7]};
+        logic [31:0] imm_b = {{19{if_id_instr[31]}}, if_id_instr[31], if_id_instr[7], if_id_instr[30:25], if_id_instr[11:8], 1'b0};
+        logic [31:0] imm_u = {if_id_instr[31:12], 12'd0};
+        logic [31:0] imm_j = {{11{if_id_instr[31]}}, if_id_instr[31], if_id_instr[19:12], if_id_instr[20], if_id_instr[30:21], 1'b0};
+        case (if_id_instr[6:0])
+            7'h03, 7'h13, 7'h67: id_imm = imm_i; // loads, ALU immediate, JALR
+            7'h23: id_imm = imm_s; // stores
+            7'h63: id_imm = imm_b; // branches
+            7'h37, 7'h17: id_imm = imm_u; // LUI/AUIPC
+            7'h6f: id_imm = imm_j; // JAL
+            default: id_imm = imm_i;
+        endcase
+    end
 
     control_unit cu(.opcode(if_id_instr[6:0]), .funct3(if_id_instr[14:12]), .funct7(if_id_instr[31:25]),
-        .alu_op(id_alu_op), .is_load(id_is_load), .is_store(id_is_store), .is_branch(id_is_branch), .reg_write(id_reg_write));
+        .reg_write(id_reg_write), .alu_src_b(alu_src_b_sig), .mem_read(id_is_load), .mem_write(id_is_store), .mem_to_reg(mem_to_reg_sig), .branch(id_is_branch), .alu_control(id_alu_op));
 
     // Read register file (combinational outputs)
     // Instantiate regfile but use a second interface: read-only by connecting we=0 on instances. For simplicity, use single regfile instance below and rely on writeback timing.
@@ -116,13 +134,17 @@ module pipeline_core(
     // ALU operand selection
     logic [31:0] alu_b;
     always_comb begin
-        // naive immediate decide: if id_ex_alu_op expects imm (we rely on control unit for op encoding)
-        alu_b = forward_b; // for simplicity; immediate ops handled by special op encoding where id_ex_imm used
-        if (id_ex_alu_op == 4'd8) alu_b = id_ex_imm; // reserved code 8 => ADDI (example)
+        alu_b = forward_b;
+        // Use immediate for load/store address calculation and I-type ops when immediate is present
+        if (id_ex_is_load || id_ex_is_store) begin
+            alu_b = id_ex_imm;
+        end else if (id_ex_imm !== 32'd0) begin
+            // heuristic: if imm captured is non-zero, prefer it for immediate ops
+            alu_b = id_ex_imm;
+        end
     end
 
-    alu alu0(.alu_op(id_ex_alu_op), .a(forward_a), .b(alu_b), .result(ex_alu_result));
-    ex_mem_alu_res = ex_alu_result; // will be registered below
+    alu alu0(.a(forward_a), .b(alu_b), .alu_control(id_ex_alu_op), .result(ex_alu_result), .zero());
     ex_mem_write_data = forward_b;
 
     // EX/MEM register
