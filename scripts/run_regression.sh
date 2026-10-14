@@ -42,4 +42,6 @@ echo '--- independently timed external instruction/data interfaces ---'
 bash "$root/scripts/run_external_regression.sh" "$output/external"
 echo '--- opt-in precise fault-stop diagnostics ---'
 bash "$root/scripts/run_fault_halt_regression.sh" "$output/fault_halt"
+echo '--- local instruction-fetch range, age-order, and redirect squash ---'
+bash "$root/scripts/run_fetch_fault_regression.sh" "$output/fetch_range"
 echo "Evidence and logs: $output"

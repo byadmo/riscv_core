@@ -15,7 +15,7 @@ This table reports **tested behaviour**, not exhaustive formal coverage or an of
 | EX/MEM before MEM/WB, WB/ID and held-ID/EX refresh | Directed; exercised randomly | Baseline forwarding program, latency stress |
 | Memory latency, single outstanding and store exactly once | Directed + deterministic variation | `DATA_LATENCY=1,2,4`, `DATA_MAX_EXTRA=0,3`; cardinality assertions |
 | Reset cancels pending store | Directed | Reset during a pending store and fresh post-reset program |
-| Invalid alignment or address >4 KiB (default `FAULT_HALT=0`) | Explicitly rejected in simulation | Four negative expected-$fatal cases |
+| Invalid data alignment or address >4 KiB (default `FAULT_HALT=0`) | Explicitly rejected in simulation | Four negative expected-$fatal cases |
 | CSR, privileged ISA, exceptions, interrupts, `ECALL`, `EBREAK`, `FENCE` | **Unsupported** | No trap/CSR pipeline |
 | Unsupported/illegal encoding detection | Opt-in `FAULT_HALT=1` for implemented RV32I subset | Reserved funct7, shifts, widths and control encodings checked; not full ISA compliance |
 | Instruction bus stalls / cache misses | **Unsupported** | Instruction memory remains zero-wait |
@@ -63,3 +63,9 @@ Not verified: zero-cycle external response, independent reset domains, response 
 | Legacy default compatibility | Four existing invalid memory accesses still terminate by expected `$fatal` |
 
 The new runner executes **15 scenarios × 6 configurations = 90 programs**, including 72 deliberately faulting programs and 18 no-fault programs, comparing **32 registers + 1,024 modeled memory words per case = 95,040 state comparisons**. The six configurations include three internal data-memory latency modes and three externally timed dual-port modes with request acceptance/backpressure and CPU response holds. Four default-mode expected rejection tests are separate. These are repeated complete-state comparisons, **not** unique instruction coverage or formal proof.
+
+## Modeled instruction-fetch boundary and redirect ordering
+
+With `FAULT_HALT=1`, an instruction PC beyond the local 4 KiB instruction store is reported as cause `1` with `fault_pc=fault_tval` set to the rejected byte PC, **without aliasing the internal ROM or sending an out-of-range external request**. A fetch-fault token propagates in instruction age order; an older taken redirect can squash it. The new independent `tb/tb_fetch_fault.sv` and `scripts/run_fetch_fault_regression.sh` check sequential crossing, redirected speculative crossing, jump-link retirement, prior data effects, reset and both internal/external timing modes.
+
+The separate fetch-boundary suite has **12 scenarios × 6 timing modes = 72 runs**: 48 fault outcomes and 24 valid/after-reset results, each checking 32 registers and 1,024 modeled data-memory words (**76,032 complete-state comparisons**). Its negative I-request monitor checks *offered* rather than only accepted invalid external fetches; protocol monitors enforce held I/D request and response payload stability. The runner also requires actually observed external I/D response holds, captures a real waveform and repeats four legacy `$fatal` negative cases and the older four-program integration test separately. No scenario or state checks from this new suite are added to historical 95,040 fault-stop, 57,024 external-port, or 50,688 internal-memory evidence totals. This is *local bounds checking only*, not support for physical bus-error responses or a privileged trap handler.
