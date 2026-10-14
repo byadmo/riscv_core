@@ -4,7 +4,11 @@
 $ErrorActionPreference = 'Stop'
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$output = Join-Path ([System.IO.Path]::GetTempPath()) 'rv32i-windows-regression'
+# Use a fresh output folder on each run. Concurrent invocations must not
+# overwrite each other's binaries, and a failed log write must never leave
+# a stale PASS summary available from an earlier successful run.
+$output = Join-Path ([System.IO.Path]::GetTempPath()) (
+    'rv32i-windows-regression-' + [guid]::NewGuid().ToString('N'))
 
 foreach ($tool in @('iverilog', 'vvp', 'python3', 'bash')) {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
@@ -12,7 +16,7 @@ foreach ($tool in @('iverilog', 'vvp', 'python3', 'bash')) {
     }
 }
 
-New-Item -ItemType Directory -Force -Path $output | Out-Null
+New-Item -ItemType Directory -Path $output | Out-Null
 
 # Bash accepts POSIX paths. Git Bash ships cygpath for translating native
 # PowerShell Windows paths; fail if a reliable conversion is unavailable.
@@ -20,7 +24,8 @@ $bashScript = Join-Path $root 'scripts/run_regression.sh'
 $bashOutput = Join-Path $output 'full'
 if ($env:OS -eq 'Windows_NT') {
     # Git Bash may provide cygpath inside its own PATH, even when native
-    # PowerShell cannot resolve cygpath directly.
+    # PowerShell cannot resolve cygpath directly. Its single-quoted string
+    # passes the inner Bash double quotes as-is; do not backslash-escape them.
     $bashScript = (& bash -c 'cygpath -u "$1"' -- $bashScript).Trim()
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($bashScript)) {
         throw "Git Bash cygpath could not convert the regression script path."
@@ -28,6 +33,13 @@ if ($env:OS -eq 'Windows_NT') {
     $bashOutput = (& bash -c 'cygpath -u "$1"' -- $bashOutput).Trim()
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($bashOutput)) {
         throw "Git Bash cygpath could not convert the regression output path."
+    }
+    # Check both paths *inside Bash* before starting simulations. This also
+    # catches accidental literal quote characters from incorrect -c quoting,
+    # including when the repository or temporary directory contains spaces.
+    & bash -c 'test -f "$1" && test -d "$(dirname "$2")"' -- $bashScript $bashOutput
+    if ($LASTEXITCODE -ne 0) {
+        throw "Converted regression paths are not accessible to Git Bash."
     }
 }
 
@@ -41,16 +53,22 @@ $sources = @(
     'tb/tb_integrated_rv32i.sv'
 ) | ForEach-Object { Join-Path $root $_ }
 $smokeBinary = Join-Path $output 'windows_integrated.vvp'
+$backendArgs = @()
+if (-not [string]::IsNullOrWhiteSpace($env:IVERILOG_BACKEND)) {
+    # Match the maintained Bash regression scripts when Icarus is supplied
+    # from an isolated toolchain instead of a system-wide installation.
+    $backendArgs = @('-B' + $env:IVERILOG_BACKEND)
+}
 # Windows PowerShell 5 reports native stderr as an ErrorRecord when preference
 # is Stop. Use explicit process exit codes and PASS markers as the gate.
 $ErrorActionPreference = 'Continue'
-& iverilog -g2012 -s $top -o $smokeBinary @sources
+& iverilog @backendArgs -g2012 -s $top -o $smokeBinary @sources
 if ($LASTEXITCODE -ne 0) {
     throw "Icarus compilation failed for top $top (exit $LASTEXITCODE)."
 }
 
 $smokeLog = Join-Path $output 'windows_integrated.log'
-& vvp $smokeBinary 2>&1 | Tee-Object -FilePath $smokeLog
+& vvp $smokeBinary 2>&1 | Tee-Object -ErrorAction Stop -FilePath $smokeLog
 if ($LASTEXITCODE -ne 0) {
     throw "Icarus simulation failed for top $top (exit $LASTEXITCODE)."
 }
@@ -63,7 +81,7 @@ if (-not (Select-String -Path $smokeLog -Pattern '^PASS ALL: 4 integrated RV32I 
 # Never accept a zero exit alone as evidence: require the end-of-run marker.
 $fullLog = Join-Path $output 'windows_full.log'
 & bash $bashScript $bashOutput 2>&1 |
-    Tee-Object -FilePath $fullLog
+    Tee-Object -ErrorAction Stop -FilePath $fullLog
 $ErrorActionPreference = 'Stop'
 if ($LASTEXITCODE -ne 0) {
     throw "Full RTL regression failed (exit $LASTEXITCODE); inspect $fullLog."
