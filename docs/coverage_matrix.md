@@ -15,12 +15,12 @@ This table reports **tested behaviour**, not exhaustive formal coverage or an of
 | EX/MEM before MEM/WB, WB/ID and held-ID/EX refresh | Directed; exercised randomly | Baseline forwarding program, latency stress |
 | Memory latency, single outstanding and store exactly once | Directed + deterministic variation | `DATA_LATENCY=1,2,4`, `DATA_MAX_EXTRA=0,3`; cardinality assertions |
 | Reset cancels pending store | Directed | Reset during a pending store and fresh post-reset program |
-| Invalid data alignment or address >4 KiB (default `FAULT_HALT=0`) | Explicitly rejected in simulation | Four negative expected-$fatal cases |
+| Invalid data alignment or addresses outside 0..4095 (default `FAULT_HALT=0`) | Explicitly rejected in simulation | Four negative expected-$fatal cases |
 | CSR, privileged ISA, exceptions, interrupts, `ECALL`, `EBREAK`, `FENCE` | **Unsupported** | No trap/CSR pipeline |
-| Unsupported/illegal encoding detection | Opt-in `FAULT_HALT=1` for implemented RV32I subset | Reserved funct7, shifts, widths and control encodings checked; not full ISA compliance |
-| Instruction bus stalls / cache misses | **Unsupported** | Instruction memory remains zero-wait |
-| Multiple outstanding or reordered responses | **Unsupported** | Single-outstanding RAM model only |
-| Independent response backpressure (`rsp_ready`), external AXI | **Unsupported** | Response consumed immediately |
+| Unsupported/illegal encoding detection | Opt-in `FAULT_HALT=1` for implemented RV32I subset | Legacy fault suite checks reserved shift upper bits/load width; separate priority suite tests reserved R-type `funct7`, branch/JALR controls and other encodings; not full ISA compliance |
+| Instruction stalls in internal mode / cache misses | **Unsupported in `EXTERNAL_PORTS=0`** | Internal instruction array is zero-wait; independent external I-channel stalls are covered below |
+| Multiple outstanding or reordered responses | **Unsupported in either mode** | At most one outstanding transaction per external I/D channel |
+| Response backpressure in internal mode / AXI | **Unsupported in `EXTERNAL_PORTS=0`** | Internal D response is consumed immediately; external I/D `rsp_ready` and held responses are covered below; AXI is not implemented |
 | Formal verification, timing closure, area/power, FPGA | **Not measured** | No synthesis or physical implementation claim |
 
 The directed architectural testbench checks all 32 registers and 1,024 memory words **per case**: 36 runs × 1,056 checks = 38,016. The randomized, separately interpreted benchmark runs 3 seeded instruction programs across four latency configurations: 12 × 1,056 = 12,672. The pre-existing four-program integration regression contributes another 4,224 state comparisons, with separate control-flow and standalone tests. Counts describe executed test comparisons, **not code or ISA coverage percentages**.
@@ -38,6 +38,7 @@ The directed architectural testbench checks all 32 registers and 1,024 memory wo
 | Branch redirect with obsolete instruction fetch | Taken branches, wrong-path stores/loads and register-write checks; explicit stale response discard |
 | Tag identity on I and D | I response PC/tag checking, D tag checking; 2 intentionally corrupted-tag tests **must** fail |
 | 8-bit fetch epoch rollover | A 300-iteration backward branch loop and 301-instruction sequential program |
+| Instruction vs data tag semantics | I tag is a redirect/fault **fetch epoch** and may repeat across consecutive PCs; D tag increments per accepted D transaction |
 | Reset during outstanding external memory store | Cancel adapter's pending request with synchronous reset; restart and assert RAM contents |
 | Byte/halfword/word semantics with external RAM | Mixed access, sign extension and masked store programs |
 | Independent architectural interpreter | Three seeded Python programs × four I/D timing configs = 12 runs |
@@ -53,7 +54,7 @@ Not verified: zero-cycle external response, independent reset domains, response 
 
 | Scenario | Test evidence |
 | --- | --- |
-| Illegal opcode and reserved R/shift/load function encodings | Exact cause `2`, offending PC/instruction word, no younger commits |
+| Illegal opcode, reserved shift-immediate upper bits and load-width encodings | Historical `tb_fault_halt.sv`: cause `2`, exact PC/instruction word, no younger commits; reserved R-type encodings are independently exercised below |
 | Misaligned LH/LW/SH/SW | Causes `4` / `6` and exact effective address; invalid D request never issued |
 | Modeled 4 KiB load/store out-of-range | Causes `5` / `7`; these are local range rejections, **not** external bus response errors |
 | Misaligned taken BEQ, JAL and JALR targets | Cause `0`, exact target PC; faulting jump link write suppressed |
@@ -63,6 +64,10 @@ Not verified: zero-cycle external response, independent reset domains, response 
 | Legacy default compatibility | Four existing invalid memory accesses still terminate by expected `$fatal` |
 
 The new runner executes **15 scenarios × 6 configurations = 90 programs**, including 72 deliberately faulting programs and 18 no-fault programs, comparing **32 registers + 1,024 modeled memory words per case = 95,040 state comparisons**. The six configurations include three internal data-memory latency modes and three externally timed dual-port modes with request acceptance/backpressure and CPU response holds. Four default-mode expected rejection tests are separate. These are repeated complete-state comparisons, **not** unique instruction coverage or formal proof.
+
+## Additional adversarial fault priority and retirement
+
+`tb/tb_fault_priority.sv` and `scripts/run_fault_priority_regression.sh` execute **18 scenarios × 4 timing configurations = 72 separately counted cases**, with **76,032 register/memory state comparisons**. Fifteen cases challenge negative effective addresses, simultaneous alignment/range violations, 4 KiB data-memory boundaries, unsupported R-type `funct7` (including M-extension MUL), reserved branch/JALR encodings and reserved load/store widths. Three further cases exercise older delayed store completion, delayed load plus dependent ALU retirement, and final older ALU writeback after `fault_valid` first becomes visible in the internal pipeline. Every case checks precise cause/PC/tval, sticky status, all 32 registers, all 1,024 data words, transaction counts, and no younger effects. External variants use independent delayed I/D channels, enforce held D-response stability and require **observed** response holds when configured to force them. These checks add no cases to the preceding 90-case fault suite or the 72-case fetch suite.
 
 ## Modeled instruction-fetch boundary and redirect ordering
 

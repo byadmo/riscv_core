@@ -47,3 +47,5 @@ bash scripts/run_fault_halt_regression.sh /tmp/rv32i-fault-halt
 The top-level `scripts/run_regression.sh` also runs this suite when enabled. Test results are repeatable simulation checks, not formal proof or silicon measurements.
 
 For the separate instruction-boundary/age-order regression, use `bash scripts/run_fetch_fault_regression.sh /tmp/rv32i-fetch-fault`. This specifically verifies sequential fall-through out of the model, aligned jump links followed by younger fetch faults, and speculative invalid fetches squashed by older control transfers. Run both suites from `scripts/run_regression.sh` in CI.
+
+The additional `bash scripts/run_fault_priority_regression.sh /tmp/rv32i-fault-priority` independently checks reserved R-type encodings, negative and simultaneously misaligned/out-of-range addresses, fault selection priority and completion of older loads, stores and register writes. In particular, `fault_valid` can assert one clock before an older non-memory EX/MEM instruction writes its destination; consumers must allow that final writeback. This additional suite does not alter the historical fault-stop/fetch-range scenario totals.
