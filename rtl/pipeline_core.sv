@@ -42,7 +42,7 @@ module pipeline_core #(
     // Declare cross-stage controls before any use. In particular, Icarus 13
     // rejects forward references in net initializers that Icarus 12 accepted.
     reg if_pending, if_buffer_valid, if_request_waiting;
-    wire stall, redirect, fault_event, mem_hold;
+    wire stall, redirect, fault_event, mem_hold, mem_rsp_valid;
     wire [31:0] mem_store_data;
     wire [3:0] mem_store_strb;
     // Never expose aliased internal ROM contents for an invalid fetch PC in
@@ -497,7 +497,7 @@ module pipeline_core #(
     wire mem_req_valid = mem_op && !EXTERNAL_PORTS;
     wire mem_req_ready, model_rsp_valid;
     wire [31:0] model_rsp_rdata;
-    wire mem_rsp_valid = EXTERNAL_PORTS ? d_rsp_fire : model_rsp_valid;
+    assign mem_rsp_valid = EXTERNAL_PORTS ? d_rsp_fire : model_rsp_valid;
     wire [31:0] mem_rsp_rdata = EXTERNAL_PORTS ? d_rsp_rdata : model_rsp_rdata;
     wire [1:0] mem_lane = ex_mem_alu_res[1:0];
     wire [4:0] mem_shift = {mem_lane,3'b000};
