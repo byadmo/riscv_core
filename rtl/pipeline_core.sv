@@ -38,8 +38,27 @@ module pipeline_core #(
 
     reg [31:0] pc;
     reg [31:0] if_id_pc, if_id_instr;
-    reg if_id_valid;
-    wire [31:0] if_instr = imem[pc[11:2]];
+    reg if_id_valid, if_id_fetch_fault;
+    // Never expose aliased internal ROM contents for an invalid fetch PC in
+    // diagnostic mode. The actual cause-1 token is supplied separately.
+    wire [31:0] if_instr = (FAULT_HALT && |pc[31:12]) ?
+                           32'h00000013 : imem[pc[11:2]];
+    // This educational instruction store spans byte addresses 0..4095.
+    // A speculative out-of-range fetch must be a squashable *instruction*
+    // token, not an immediate global halt that could overtake an older branch.
+    wire fetch_bad_range = FAULT_HALT && |pc[31:12];
+    reg if_fault_pending;
+    wire fetch_fault_inject = fetch_bad_range && !if_fault_pending &&
+        !fault_valid && !fault_event && !redirect && !mem_hold && !stall &&
+        (!EXTERNAL_PORTS || (!if_pending && !if_buffer_valid && !if_request_waiting));
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            if_fault_pending <= 0;
+        else if (redirect || fault_event)
+            if_fault_pending <= 0;
+        else if (fetch_fault_inject)
+            if_fault_pending <= 1;
+    end
     // External fetch: only one request may be outstanding. Returned words are
     // buffered until decode can advance. Redirect increments an epoch so an
     // obsolete request can be drained without ever entering the pipeline.
@@ -66,7 +85,8 @@ module pipeline_core #(
             if_request_tag <= 0;
         end else if (EXTERNAL_PORTS) begin
             if (!if_pending && !if_buffer_valid && !if_request_waiting &&
-                !redirect && !mem_hold && !fault_event && !fault_valid) begin
+                !redirect && !mem_hold && !fault_event && !fault_valid &&
+                !fetch_bad_range && !if_fault_pending) begin
                 if_request_waiting <= 1;
                 if_request_pc <= pc;
                 if_request_tag <= fetch_epoch;
@@ -189,7 +209,7 @@ module pipeline_core #(
     reg id_ex_valid;
     reg [31:0] id_ex_pc, id_ex_rd1, id_ex_rd2, id_ex_imm;
     reg [31:0] id_ex_instr;
-    reg id_ex_illegal;
+    reg id_ex_illegal, id_ex_fetch_fault;
     reg [4:0] id_ex_rs1, id_ex_rs2, id_ex_rd;
     reg [2:0] id_ex_funct3;
     reg [3:0] id_ex_alu_op;
@@ -258,7 +278,8 @@ module pipeline_core #(
     // Observe faults at EX, after any older memory operation drains. This
     // makes fault reporting precise without ever issuing the invalid D access.
     wire fault_event = FAULT_HALT && !fault_valid && id_ex_valid && !mem_hold &&
-                       (id_ex_illegal || ex_bad_align || ex_bad_range || ex_target_bad);
+                       (id_ex_fetch_fault || id_ex_illegal || ex_bad_align ||
+                        ex_bad_range || ex_target_bad);
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             fault_valid <= 0;
@@ -268,7 +289,12 @@ module pipeline_core #(
         end else if (fault_event) begin
             fault_valid <= 1;
             fault_pc <= id_ex_pc;
-            if (id_ex_illegal) begin
+            if (id_ex_fetch_fault) begin
+                // Local instruction-memory bounds violation only, not a
+                // bus-provided fetch-error response or privileged trap.
+                fault_cause <= 32'd1;
+                fault_tval <= id_ex_pc;
+            end else if (id_ex_illegal) begin
                 fault_cause <= 32'd2;
                 fault_tval <= id_ex_instr;
             end else if (ex_bad_align) begin
@@ -289,11 +315,13 @@ module pipeline_core #(
             if_id_pc <= 0;
             if_id_instr <= 0;
             if_id_valid <= 0;
+            if_id_fetch_fault <= 0;
         end else if (fault_event || fault_valid) begin
             // Stop fetch progression and discard younger prefetched work;
             // the exact faulting instruction PC is latched from ID/EX.
             if_id_valid <= 0;
             if_id_instr <= 0;
+            if_id_fetch_fault <= 0;
         end else if (mem_hold) begin
             // Older data-memory operation blocks any younger redirect or fetch.
         end else if (redirect) begin
@@ -301,19 +329,40 @@ module pipeline_core #(
             if_id_pc <= 0;
             if_id_instr <= 0;
             if_id_valid <= 0;
+            if_id_fetch_fault <= 0;
         end else if (!stall) begin
             if (EXTERNAL_PORTS) begin
-                if_id_valid <= if_buffer_valid;
-                if (if_buffer_valid) begin
+                if (fetch_fault_inject) begin
+                    if_id_valid <= 1;
+                    if_id_fetch_fault <= 1;
+                    if_id_pc <= pc;
+                    if_id_instr <= 0;
+                end else begin
+                    if_id_valid <= if_buffer_valid;
+                    if_id_fetch_fault <= 0;
+                end
+                if (if_buffer_valid && !fetch_fault_inject) begin
                     pc <= pc + 32'd4;
                     if_id_pc <= pc;
                     if_id_instr <= if_buffer_instr;
                 end
             end else begin
-                pc <= pc + 32'd4;
-                if_id_pc <= pc;
-                if_id_instr <= if_instr;
-                if_id_valid <= 1;
+                if (fetch_bad_range) begin
+                    // Inject exactly once; hold the bad fetch PC until the
+                    // fault reaches EX or an older redirect squashes it.
+                    if_id_valid <= fetch_fault_inject;
+                    if_id_fetch_fault <= fetch_fault_inject;
+                    if (fetch_fault_inject) begin
+                        if_id_pc <= pc;
+                        if_id_instr <= 0;
+                    end
+                end else begin
+                    pc <= pc + 32'd4;
+                    if_id_pc <= pc;
+                    if_id_instr <= if_instr;
+                    if_id_valid <= 1;
+                    if_id_fetch_fault <= 0;
+                end
             end
         end
     end
@@ -323,7 +372,7 @@ module pipeline_core #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             id_ex_valid <= 0;
-            id_ex_instr <= 0; id_ex_illegal <= 0;
+            id_ex_instr <= 0; id_ex_illegal <= 0; id_ex_fetch_fault <= 0;
             id_ex_pc <= 0; id_ex_rd1 <= 0; id_ex_rd2 <= 0; id_ex_imm <= 0;
             id_ex_rs1 <= 0; id_ex_rs2 <= 0; id_ex_rd <= 0; id_ex_funct3 <= 0;
             id_ex_alu_op <= 0; id_ex_reg_write <= 0;
@@ -337,7 +386,7 @@ module pipeline_core #(
             if (rf_we && rf_wr == id_ex_rs2) id_ex_rd2 <= rf_wd;
         end else if (fault_event || fault_valid || redirect || stall) begin
             id_ex_valid <= 0;
-            id_ex_instr <= 0; id_ex_illegal <= 0;
+            id_ex_instr <= 0; id_ex_illegal <= 0; id_ex_fetch_fault <= 0;
             id_ex_pc <= 0; id_ex_rd1 <= 0; id_ex_rd2 <= 0; id_ex_imm <= 0;
             id_ex_rs1 <= 0; id_ex_rs2 <= 0; id_ex_rd <= 0; id_ex_funct3 <= 0;
             id_ex_alu_op <= 0; id_ex_reg_write <= 0;
@@ -347,7 +396,8 @@ module pipeline_core #(
         end else begin
             id_ex_valid <= if_id_valid;
             id_ex_instr <= if_id_instr;
-            id_ex_illegal <= if_id_valid && !id_legal;
+            id_ex_fetch_fault <= if_id_valid && if_id_fetch_fault;
+            id_ex_illegal <= if_id_valid && !if_id_fetch_fault && !id_legal;
             id_ex_pc <= if_id_pc; id_ex_rd1 <= id_value1; id_ex_rd2 <= id_value2;
             id_ex_imm <= id_imm; id_ex_rs1 <= id_rs1; id_ex_rs2 <= id_rs2;
             id_ex_rd <= id_rd; id_ex_funct3 <= id_funct3;

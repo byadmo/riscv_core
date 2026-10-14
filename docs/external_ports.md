@@ -25,7 +25,7 @@ The data side retains EX/MEM address, store payload, destination and control unt
 
 ## Errors and unsupported features
 
-- Instruction requests must be word-aligned within the supported modeled fetch address space. A physical instruction access-fault handler, privileged traps, CSRs and ISA exception recovery are not implemented.
+- With opt-in `FAULT_HALT=1`, the core detects attempted fetches beyond its modeled 4 KiB instruction range **before issuing an I request** and injects a squashable, age-ordered local cause-`1` fault token instead. An older redirect can flush that token. In default mode, the historical simulated instruction-range restrictions still apply. Actual instruction bus-error responses, a privileged instruction access-fault handler, CSRs and ISA exception recovery are not implemented.
 - The data interface preserves little-endian `LB/LBU/LH/LHU/LW/SB/SH/SW` semantics. With default `FAULT_HALT=0`, invalid data alignment/range causes a simulator `$fatal`. Opt-in `FAULT_HALT=1` provides **precise, sticky fault-stop outputs** before an invalid request is issued; this is not a recoverable RISC-V trap. See [fault diagnostics](fault_halt.md).
 - Memory mapping, MMIO, external bus arbitration, multi-beat accesses, atomics, fences, cache coherence and two or more outstanding requests per channel are unsupported.
 - A valid response must eventually be presented by the memory. No deadlock-free guarantee can be made when the external environment withholds response forever.
