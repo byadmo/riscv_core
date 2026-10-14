@@ -279,6 +279,13 @@ module tb_integrated_rv32i;
             dut.imem[12] = lw(10, 0, 0);
             dut.imem[13] = sw(10, 0, 8);  // load followed immediately by store
             dut.imem[14] = lw(11, 0, 8);
+            dut.imem[15] = lw(12, 0, 0);  // consecutive loads from different addresses
+            dut.imem[16] = lw(13, 0, 4);
+            dut.imem[17] = r_type(0, 13, 12, 3'b000, 14);
+            dut.imem[18] = addi(15, 0, 9);
+            dut.imem[19] = addi(16, 0, 1);
+            dut.imem[20] = addi(17, 0, 2);
+            dut.imem[21] = addi(18, 15, 4); // WB/ID same-edge dependency, not EX/MEM
 
             expect_reg(1, 100);
             expect_reg(2, 100);
@@ -291,11 +298,18 @@ module tb_integrated_rv32i;
             expect_reg(9, 402);
             expect_reg(10, 100);
             expect_reg(11, 100);
+            expect_reg(12, 100);
+            expect_reg(13, 201);
+            expect_reg(14, 301);
+            expect_reg(15, 9);
+            expect_reg(16, 1);
+            expect_reg(17, 2);
+            expect_reg(18, 13);
             expect_mem(0, 100);
             expect_mem(1, 201);
             expect_mem(2, 100);
             expect_mem(3, 302);
-            execute_and_check(15, 120);
+            execute_and_check(22, 120);
         end
     endtask
 
