@@ -77,7 +77,7 @@ if (-not (Select-String -Path $smokeLog -Pattern '^PASS ALL: 4 integrated RV32I 
 }
 
 # The maintained Bash entry point contains the full directed, memory, Python
-# oracle, external-port, fault-halt, fetch-boundary and priority matrices.
+# oracle, external-port, fault-halt, fetch-boundary, priority and I-reset matrices.
 # Never accept a zero exit alone as evidence: require the end-of-run marker.
 $fullLog = Join-Path $output 'windows_full.log'
 & bash $bashScript $bashOutput 2>&1 |
@@ -90,6 +90,7 @@ $required = @(
     '^PASS FAULT_HALT matrix: 6 configurations, 90 scenarios',
     '^PASS fetch-range FAULT_HALT=1 matrix: 6 configurations, 72 cases',
     '^PASS fault-priority regression:',
+    '^PASS external I reset regression: 4 timing/mode configurations, 12 independently exercised reset conditions$',
     '^Evidence and logs:'
 )
 foreach ($marker in $required) {

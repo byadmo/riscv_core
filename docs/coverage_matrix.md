@@ -40,11 +40,14 @@ The directed architectural testbench checks all 32 registers and 1,024 memory wo
 | 8-bit fetch epoch rollover | A 300-iteration backward branch loop and 301-instruction sequential program |
 | Instruction vs data tag semantics | I tag is a redirect/fault **fetch epoch** and may repeat across consecutive PCs; D tag increments per accepted D transaction |
 | Reset during outstanding external memory store | Cancel adapter's pending request with synchronous reset; restart and assert RAM contents |
+| Reset during unaccepted, pending and held external I transactions | Separate `tb_external_i_reset.sv`: three actually observed pre-reset I-channel states, coordinated core/adapter reset and fresh-program contamination checks, in `FAULT_HALT=0/1` |
 | Byte/halfword/word semantics with external RAM | Mixed access, sign extension and masked store programs |
 | Independent architectural interpreter | Three seeded Python programs × four I/D timing configs = 12 runs |
 | Request/response cardinality and stores | Asserted per-program transaction counts; bounded outstanding transactions |
 
 The new external directed suite executes **7 scenarios × 6 timing configurations = 42 program runs**, checking all 32 integer registers and 1,024 data-memory words per run (**44,352 state comparisons**). The external independently interpreted suite executes **3 seeds × 4 configurations = 12 runs** with **12,672 comparisons**, plus two expected identity-fault rejections. These are *additional* to the previous 38,016 directed internal-latency comparisons and 12,672 internal-reference comparisons. These counts are not formal coverage metrics.
+
+The independent `scripts/run_external_i_reset_regression.sh` adds **3 I-channel cancellation states × 2 external bus timing configurations × 2 fault modes = 12 targeted reset runs**. It checks concrete held/queued/accepted states before reset, absence of outstanding transfers after shared reset, fresh program register results and an unaffected data-memory sentinel. This targeted suite is **not** counted as 1,056 complete-state comparisons per run and does not change the historical 42/12 external or 90/72/72 fault-suite totals.
 
 Not verified: zero-cycle external response, independent reset domains, response reordering, multiple outstanding requests on a channel, external instruction/data coherence under self-modifying code, ISA exception/trap recovery, privileged/system instructions, hardware synthesis or physical timing.
 

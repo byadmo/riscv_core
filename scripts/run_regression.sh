@@ -46,4 +46,6 @@ echo '--- local instruction-fetch range, age-order, and redirect squash ---'
 bash "$root/scripts/run_fetch_fault_regression.sh" "$output/fetch_range"
 echo '--- separately counted adversarial fault priority and retirement ---'
 bash "$root/scripts/run_fault_priority_regression.sh" "$output/fault_priority"
+echo '--- separate external instruction reset cancellation ---'
+bash "$root/scripts/run_external_i_reset_regression.sh" "$output/external_i_reset"
 echo "Evidence and logs: $output"
