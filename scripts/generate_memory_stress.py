@@ -95,6 +95,9 @@ def main():
     seed=int(sys.argv[2]); rng=random.Random(seed)
     words=[rng.getrandbits(32) for _ in range(1024)]
     program=[]
+    # Nonzero base register remains unchanged throughout the sequence. Some
+    # memory accesses use positive/negative offsets from x25 rather than x0.
+    program.append(encode_i(64,0,0,25))
     for n in range(1,17):
         program.append(encode_i(rng.randrange(-128,128),0,0,n))
     actions=['add','sub','xor','and','or','sll','srl','sra','slt','sltu',
@@ -115,10 +118,12 @@ def main():
             f3={'lb':0,'lbu':4,'lh':1,'lhu':5,'lw':2,'sb':0,'sh':1,'sw':2}[action]
             size=2 if 'h' in action else 4 if 'w' in action else 1
             addr=rng.randrange(0,128//size)*size
+            base=25 if rng.randrange(2) else 0
+            offset=addr-64 if base==25 else addr
             if action.startswith('l'):
-                program.append(encode_i(addr,0,f3,rd,0x03))
+                program.append(encode_i(offset,base,f3,rd,0x03))
             else:
-                program.append(encode_s(addr,rs2,0,f3))
+                program.append(encode_s(offset,rs2,base,f3))
         elif action=='branch':
             # Forward-only branch, followed by a wrong-path store sentinel or ALU.
             f3=rng.choice([0,1,4,5,6,7])

@@ -42,18 +42,43 @@ module tb_memory_latency_rv32i #(
     integer rsp_count = 0;
     integer store_req_count = 0;
     integer store_rsp_count = 0;
+    // Protocol scoreboard independent of DUT's busy/remaining registers.
+    // Demand that every transfer completes at the contractually specified
+    // clock edge, not just that final memory and request totals look correct.
+    integer monitor_cycle = 0, request_ordinal = 0, expected_response_cycle = 0;
+    reg pending_response = 0;
+    integer expected_extra;
     always @(posedge clk) begin
-        if (rst_n) begin
+        if (!rst_n) begin
+            monitor_cycle = 0;
+            request_ordinal = 0;
+            pending_response = 0;
+            expected_response_cycle = 0;
+        end else begin
+            monitor_cycle = monitor_cycle + 1;
             if (dut.mem_model.req_valid && dut.mem_model.req_ready) begin
+                if (pending_response)
+                    $fatal(1,"A second memory request was accepted before response");
+                expected_extra = DATA_MAX_EXTRA == 0 ? 0 :
+                    ((dut.mem_model.req_addr[4:2] ^ (request_ordinal & 7)) % (DATA_MAX_EXTRA+1));
+                expected_response_cycle = monitor_cycle + DATA_LATENCY + expected_extra - 1;
+                pending_response = 1;
+                request_ordinal = request_ordinal + 1;
                 req_count = req_count + 1;
                 if (dut.mem_model.req_write)
                     store_req_count = store_req_count + 1;
             end
             if (dut.mem_model.rsp_valid) begin
+                if (!pending_response || monitor_cycle != expected_response_cycle)
+                    $fatal(1,"Memory response at wrong cycle=%0d expected=%0d pending=%0b",
+                           monitor_cycle,expected_response_cycle,pending_response);
+                pending_response = 0;
                 rsp_count = rsp_count + 1;
                 if (dut.mem_model.response_write)
                     store_rsp_count = store_rsp_count + 1;
             end
+            if (pending_response && monitor_cycle >= expected_response_cycle)
+                $fatal(1,"Memory response missing at expected cycle=%0d",expected_response_cycle);
         end
     end
 

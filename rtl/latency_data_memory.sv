@@ -9,8 +9,7 @@
 // Address alignment/range validation is done by the core, not this RAM model.
 module latency_data_memory #(
     parameter integer LATENCY = 1,
-    parameter integer MAX_EXTRA = 0,
-    parameter integer WORDS = 1024
+    parameter integer MAX_EXTRA = 0
 ) (
     input wire clk, rst_n,
     input wire req_valid,
@@ -22,7 +21,9 @@ module latency_data_memory #(
     output wire rsp_valid,
     output wire [31:0] rsp_rdata
 );
-    reg [31:0] words [0:WORDS-1];
+    // Fixed 4 KiB modeled RAM. A smaller configurable word array would need
+    // additional bounds handling; do not imply it is currently supported.
+    reg [31:0] words [0:1023];
     reg busy;
     localparam integer CW = LATENCY+MAX_EXTRA > 1 ? $clog2(LATENCY+MAX_EXTRA+1) : 1;
     reg [CW-1:0] remaining;
@@ -44,8 +45,8 @@ module latency_data_memory #(
     assign rsp_rdata = words[response_addr[11:2]];
 
     initial begin
-        if (LATENCY < 1 || MAX_EXTRA < 0 || WORDS < 1 || WORDS > 1024)
-            $fatal(1, "LATENCY must be >=1 and 1<=WORDS<=1024");
+        if (LATENCY < 1 || MAX_EXTRA < 0)
+            $fatal(1, "LATENCY must be >=1 and MAX_EXTRA >=0");
     end
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin

@@ -11,7 +11,7 @@ This table reports **tested behaviour**, not exhaustive formal coverage or an of
 | BEQ/BNE/BLT/BGE/BLTU/BGEU | Directed; selected random | Six branch conditions and negative offsets, wrong-path stores |
 | JAL/JALR | Directed JAL/JALR; randomized JAL | Separate link/align/redirect program; random forward JAL |
 | LUI/AUIPC | Directed | Separate control-flow program |
-| Load-use, load-to-store, load-to-branch | Directed | Six memory scenarios, baseline program regression |
+| Load-use, load-to-store, load-to-branch, nonzero memory base | Directed + randomized | Six memory scenarios; random accesses include positive/negative offsets from x25 |
 | EX/MEM before MEM/WB, WB/ID and held-ID/EX refresh | Directed; exercised randomly | Baseline forwarding program, latency stress |
 | Memory latency, single outstanding and store exactly once | Directed + deterministic variation | `DATA_LATENCY=1,2,4`, `DATA_MAX_EXTRA=0,3`; cardinality assertions |
 | Reset cancels pending store | Directed | Reset during a pending store and fresh post-reset program |
