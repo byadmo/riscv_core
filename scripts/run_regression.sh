@@ -24,7 +24,7 @@ run_one tb_register_file register_file "tb_register_file PASS" \
 run_one tb_control_unit control_unit "tb_control_unit PASS" \
   "$root/rtl/control_unit.sv" "$root/tb/tb_control_unit.sv"
 core=("$root/rtl/pipeline_core.sv" "$root/rtl/alu.sv"
-      "$root/rtl/control_unit.sv" "$root/rtl/regfile.sv")
+      "$root/rtl/control_unit.sv" "$root/rtl/regfile.sv" "$root/rtl/latency_data_memory.sv")
 echo '--- integrated architectural programs ---'
 "${ivl[@]}" -g2012 -s tb_integrated_rv32i -o "$output/integrated.vvp" \
   "${core[@]}" "$root/tb/tb_integrated_rv32i.sv"
@@ -36,4 +36,6 @@ echo '--- independent control-flow program ---'
 vvp "$output/controlflow.vvp" | tee "$output/controlflow.log"
 grep -q '^PASS controlflow:' "$output/controlflow.log"
 echo 'PASS regression: 3 standalone modules + 4 integrated programs + 1 control-flow program'
+echo '--- latency-aware memory and independent reference regressions ---'
+bash "$root/scripts/run_memory_regression.sh" "$output/memory"
 echo "Evidence and logs: $output"

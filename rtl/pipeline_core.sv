@@ -1,11 +1,14 @@
 `timescale 1ns/1ps
 `default_nettype none
 // Integrated five-stage educational RV32I-subset core.
-// Pipeline: IF -> ID -> EX -> MEM -> WB. One-cycle data-memory read model.
-// Instruction/data memory are testbench-initialized word arrays (no bus yet).
-module pipeline_core(input wire clk, input wire rst_n);
+// Pipeline: IF -> ID -> EX -> MEM -> WB.
+// Data memory uses a single-outstanding synchronous request/response model.
+// Instruction memory is still a zero-wait-state word array.
+module pipeline_core #(
+    parameter integer DATA_LATENCY = 1,
+    parameter integer DATA_MAX_EXTRA = 0
+)(input wire clk, input wire rst_n);
     reg [31:0] imem [0:1023];
-    reg [31:0] dmem [0:1023];
 
     reg [31:0] pc;
     reg [31:0] if_id_pc, if_id_instr;
@@ -45,10 +48,13 @@ module pipeline_core(input wire clk, input wire rst_n);
     wire id_is_auipc = id_opcode == 7'h17;
     wire id_is_jal = id_opcode == 7'h6f;
     wire id_is_jalr = id_opcode == 7'h67 && id_funct3 == 3'b000;
-    wire id_reg_write = if_id_valid && ((cu_reg_write && (id_opcode!=7'h03 || id_funct3==3'b010)) ||
+    wire id_load_supported = id_funct3==3'b000 || id_funct3==3'b001 ||
+                             id_funct3==3'b010 || id_funct3==3'b100 || id_funct3==3'b101;
+    wire id_store_supported = id_funct3==3'b000 || id_funct3==3'b001 || id_funct3==3'b010;
+    wire id_reg_write = if_id_valid && ((cu_reg_write && (id_opcode!=7'h03 || id_load_supported)) ||
                                         id_is_lui || id_is_auipc || id_is_jal || id_is_jalr);
-    wire id_mem_read = if_id_valid && cu_mem_read && id_funct3 == 3'b010;
-    wire id_mem_write = if_id_valid && cu_mem_write && id_funct3 == 3'b010;
+    wire id_mem_read = if_id_valid && cu_mem_read && id_load_supported;
+    wire id_mem_write = if_id_valid && cu_mem_write && id_store_supported;
     wire id_branch = if_id_valid && cu_branch;
     wire id_use_imm = cu_alu_src_b || id_is_auipc;
 
@@ -77,6 +83,7 @@ module pipeline_core(input wire clk, input wire rst_n);
     reg ex_mem_valid;
     reg [31:0] ex_mem_alu_res, ex_mem_write_data_reg;
     reg [4:0] ex_mem_rd;
+    reg [2:0] ex_mem_funct3;
     reg ex_mem_reg_write, ex_mem_is_load, ex_mem_is_store;
     reg mem_wb_valid;
     reg [31:0] mem_wb_alu_res, mem_wb_mem_read_data;
@@ -117,7 +124,7 @@ module pipeline_core(input wire clk, input wire rst_n);
             default: branch_condition = 1'b0;
         endcase
     end
-    wire redirect = id_ex_valid && ((id_ex_is_branch && branch_condition) ||
+    wire redirect = id_ex_valid && !mem_hold && ((id_ex_is_branch && branch_condition) ||
                                     id_ex_is_jal || id_ex_is_jalr);
     // B/J immediates already contain the low zero bit: never shift again.
     wire [31:0] redirect_target = id_ex_is_jalr ?
@@ -128,6 +135,8 @@ module pipeline_core(input wire clk, input wire rst_n);
             if_id_pc <= 0;
             if_id_instr <= 0;
             if_id_valid <= 0;
+        end else if (mem_hold) begin
+            // Older data-memory operation blocks any younger redirect or fetch.
         end else if (redirect) begin
             pc <= redirect_target;
             if_id_pc <= 0;
@@ -144,7 +153,20 @@ module pipeline_core(input wire clk, input wire rst_n);
     // On redirect, kill the younger ID instruction before it executes.
     // On load-use stall, consume the EX load but inject one bubble.
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n || redirect || stall) begin
+        if (!rst_n) begin
+            id_ex_valid <= 0;
+            id_ex_pc <= 0; id_ex_rd1 <= 0; id_ex_rd2 <= 0; id_ex_imm <= 0;
+            id_ex_rs1 <= 0; id_ex_rs2 <= 0; id_ex_rd <= 0; id_ex_funct3 <= 0;
+            id_ex_alu_op <= 0; id_ex_reg_write <= 0;
+            id_ex_is_load <= 0; id_ex_is_store <= 0; id_ex_is_branch <= 0;
+            id_ex_use_imm <= 0; id_ex_is_lui <= 0; id_ex_is_auipc <= 0;
+            id_ex_is_jal <= 0; id_ex_is_jalr <= 0;
+        end else if (mem_hold) begin
+            // MEM/WB can retire during the first wait cycle. Preserve those
+            // operands in a held ID/EX so forwarding is not lost when WB drains.
+            if (rf_we && rf_wr == id_ex_rs1) id_ex_rd1 <= rf_wd;
+            if (rf_we && rf_wr == id_ex_rs2) id_ex_rd2 <= rf_wd;
+        end else if (redirect || stall) begin
             id_ex_valid <= 0;
             id_ex_pc <= 0; id_ex_rd1 <= 0; id_ex_rd2 <= 0; id_ex_imm <= 0;
             id_ex_rs1 <= 0; id_ex_rs2 <= 0; id_ex_rd <= 0; id_ex_funct3 <= 0;
@@ -170,6 +192,17 @@ module pipeline_core(input wire clk, input wire rst_n);
             ex_mem_valid <= 0; ex_mem_alu_res <= 0;
             ex_mem_write_data_reg <= 0; ex_mem_rd <= 0;
             ex_mem_reg_write <= 0; ex_mem_is_load <= 0; ex_mem_is_store <= 0;
+            ex_mem_funct3 <= 0;
+        end else if (mem_hold) begin
+            // A response completes exactly one outstanding operation. Vacate
+            // EX/MEM but preserve younger ID/EX for the following cycle so a
+            // newly returned load can forward from MEM/WB.
+            if (mem_rsp_valid) begin
+                ex_mem_valid <= 0;
+                ex_mem_reg_write <= 0;
+                ex_mem_is_load <= 0;
+                ex_mem_is_store <= 0;
+            end
         end else begin
             ex_mem_valid <= id_ex_valid;
             ex_mem_alu_res <= ex_result;
@@ -178,29 +211,75 @@ module pipeline_core(input wire clk, input wire rst_n);
             ex_mem_reg_write <= id_ex_reg_write;
             ex_mem_is_load <= id_ex_is_load;
             ex_mem_is_store <= id_ex_is_store;
+            ex_mem_funct3 <= id_ex_funct3;
         end
     end
-
-    // One-cycle MEM model: word-aligned little-endian LW/SW only.
-    // Read data for the current EX/MEM load and latch it with its matching
-    // destination/control into MEM/WB (not a late extra EX/MEM register).
+    wire mem_op = ex_mem_valid && (ex_mem_is_load || ex_mem_is_store);
+    wire mem_hold = mem_op;
+    wire mem_req_valid = mem_op;
+    wire mem_req_ready, mem_rsp_valid;
+    wire [31:0] mem_rsp_rdata;
+    wire [1:0] mem_lane = ex_mem_alu_res[1:0];
+    wire [4:0] mem_shift = {mem_lane,3'b000};
+    wire [31:0] mem_store_data = ex_mem_write_data_reg << mem_shift;
+    wire [3:0] mem_store_strb =
+        ex_mem_funct3==3'b000 ? (4'b0001 << mem_lane) :
+        ex_mem_funct3==3'b001 ? (4'b0011 << mem_lane) : 4'b1111;
+    // Word memory returns an aligned 32-bit word. Extract requested little-
+    // endian lane and sign/zero-extend in the CPU's final MEM step.
+    wire [31:0] mem_shifted = mem_rsp_rdata >> mem_shift;
+    reg [31:0] mem_load_value;
+    always @* begin
+        case (ex_mem_funct3)
+            3'b000: mem_load_value = {{24{mem_shifted[7]}},mem_shifted[7:0]}; // LB
+            3'b001: mem_load_value = {{16{mem_shifted[15]}},mem_shifted[15:0]}; // LH
+            3'b100: mem_load_value = {24'b0,mem_shifted[7:0]}; // LBU
+            3'b101: mem_load_value = {16'b0,mem_shifted[15:0]}; // LHU
+            default: mem_load_value = mem_rsp_rdata; // LW
+        endcase
+    end
+    latency_data_memory #(.LATENCY(DATA_LATENCY),.MAX_EXTRA(DATA_MAX_EXTRA)) mem_model (
+        .clk(clk), .rst_n(rst_n), .req_valid(mem_req_valid),
+        .req_ready(mem_req_ready), .req_write(ex_mem_is_store),
+        .req_addr(ex_mem_alu_res), .req_wdata(mem_store_data),
+        .req_wstrb(mem_store_strb), .rsp_valid(mem_rsp_valid),
+        .rsp_rdata(mem_rsp_rdata)
+    );
+    // No exception/trap pipeline yet: reject unsupported addresses in
+    // simulation rather than aliasing silently to a different word or lane.
+    wire mem_bad_align = ((ex_mem_funct3 == 3'b001 || ex_mem_funct3 == 3'b101) && mem_lane[0]) ||
+                         (ex_mem_funct3 == 3'b010 && mem_lane != 0);
+    wire mem_bad_range = |ex_mem_alu_res[31:12];
+`ifndef SYNTHESIS
+    always @(posedge clk)
+        if (rst_n && mem_req_valid && mem_req_ready &&
+            (mem_bad_align || mem_bad_range))
+            $fatal(1, "Unsupported memory access: address=%08h funct3=%03b align=%b range=%b",
+                   ex_mem_alu_res,ex_mem_funct3,mem_bad_align,mem_bad_range);
+`endif
+    // Response is consumed at most once and paired with destination/control.
+    // A waiting memory operation bubbles MEM/WB after the old WB has retired;
+    // it cannot repeatedly commit a store or register write.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             mem_wb_valid <= 0; mem_wb_alu_res <= 0;
             mem_wb_mem_read_data <= 0; mem_wb_rd <= 0;
             mem_wb_reg_write <= 0; mem_wb_is_load <= 0;
+        end else if (mem_hold) begin
+            mem_wb_valid <= mem_rsp_valid && ex_mem_valid;
+            mem_wb_alu_res <= ex_mem_alu_res;
+            mem_wb_mem_read_data <= mem_load_value;
+            mem_wb_rd <= ex_mem_rd;
+            mem_wb_reg_write <= ex_mem_reg_write;
+            mem_wb_is_load <= ex_mem_is_load;
         end else begin
             mem_wb_valid <= ex_mem_valid;
             mem_wb_alu_res <= ex_mem_alu_res;
-            mem_wb_mem_read_data <= dmem[ex_mem_alu_res[11:2]];
+            mem_wb_mem_read_data <= 0;
             mem_wb_rd <= ex_mem_rd;
             mem_wb_reg_write <= ex_mem_reg_write;
             mem_wb_is_load <= ex_mem_is_load;
         end
-    end
-    always @(posedge clk) begin
-        if (rst_n && ex_mem_valid && ex_mem_is_store)
-            dmem[ex_mem_alu_res[11:2]] <= ex_mem_write_data_reg;
     end
 endmodule
 `default_nettype wire

@@ -116,7 +116,7 @@ module tb_integrated_rv32i;
             active_case = label;
             for (n = 0; n < MEM_WORDS; n = n + 1) begin
                 dut.imem[n] = NOP;
-                dut.dmem[n] = 32'd0;
+                dut.mem_model.words[n] = 32'd0;
                 expected_mem[n] = 32'd0;
             end
             for (n = 0; n < 32; n = n + 1) expected_regs[n] = 32'd0;
@@ -141,7 +141,7 @@ module tb_integrated_rv32i;
 
     task automatic preload_mem(input integer wordnum, input [31:0] value);
         begin
-            dut.dmem[wordnum] = value;
+            dut.mem_model.words[wordnum] = value;
             expect_mem(wordnum, value);
         end
     endtask
@@ -158,9 +158,9 @@ module tb_integrated_rv32i;
                 checks_passed = checks_passed + 1;
             end
             for (n = 0; n < MEM_WORDS; n = n + 1) begin
-                if (dut.dmem[n] !== expected_mem[n]) begin
+                if (dut.mem_model.words[n] !== expected_mem[n]) begin
                     $display("FAIL %0s: dmem[%0d] expected=0x%08h actual=0x%08h pc=0x%08h at %0t",
-                             active_case, n, expected_mem[n], dut.dmem[n], dut.pc, $time);
+                             active_case, n, expected_mem[n], dut.mem_model.words[n], dut.pc, $time);
                     $fatal(1, "Architectural memory mismatch");
                 end
                 checks_passed = checks_passed + 1;
