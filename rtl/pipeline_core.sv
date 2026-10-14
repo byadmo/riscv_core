@@ -10,7 +10,10 @@ module pipeline_core #(
     parameter integer DATA_LATENCY = 1,
     parameter integer DATA_MAX_EXTRA = 0,
     parameter integer EXTERNAL_PORTS = 0,
-    parameter integer DATA_RESPONSE_DELAY = 0
+    parameter integer DATA_RESPONSE_DELAY = 0,
+    // Opt-in fail-stop diagnostic interface, NOT privileged RISC-V traps.
+    // Default mode retains historical simulator $fatal behavior.
+    parameter integer FAULT_HALT = 0
 )(
     input wire clk, input wire rst_n,
     output wire i_req_valid, input wire i_req_ready,
@@ -25,7 +28,11 @@ module pipeline_core #(
     output wire [31:0] d_req_wdata, output wire [3:0] d_req_wstrb,
     input wire d_rsp_valid, output wire d_rsp_ready,
     input wire [7:0] d_rsp_tag,
-    input wire [31:0] d_rsp_rdata
+    input wire [31:0] d_rsp_rdata,
+    output reg fault_valid,
+    output reg [31:0] fault_cause,
+    output reg [31:0] fault_pc,
+    output reg [31:0] fault_tval
 );
     reg [31:0] imem [0:1023];
 
@@ -59,13 +66,14 @@ module pipeline_core #(
             if_request_tag <= 0;
         end else if (EXTERNAL_PORTS) begin
             if (!if_pending && !if_buffer_valid && !if_request_waiting &&
-                !redirect && !mem_hold) begin
+                !redirect && !mem_hold && !fault_event && !fault_valid) begin
                 if_request_waiting <= 1;
                 if_request_pc <= pc;
                 if_request_tag <= fetch_epoch;
             end
-            if (redirect) begin
+            if (redirect || fault_event)
                 fetch_epoch <= fetch_epoch + 1'b1;
+            if (redirect || fault_event || fault_valid) begin
                 if_buffer_valid <= 0;
             end else if (!mem_hold && !stall && if_buffer_valid)
                 if_buffer_valid <= 0;
@@ -77,7 +85,7 @@ module pipeline_core #(
             end
             if (fetch_response) begin
                 if_pending <= 0;
-                if (!redirect && !if_old_request) begin
+                if (!redirect && !fault_event && !fault_valid && !if_old_request) begin
                     if_buffer_valid <= 1;
                     if_buffer_instr <= i_rsp_data;
                 end
@@ -128,6 +136,39 @@ module pipeline_core #(
     wire id_load_supported = id_funct3==3'b000 || id_funct3==3'b001 ||
                              id_funct3==3'b010 || id_funct3==3'b100 || id_funct3==3'b101;
     wire id_store_supported = id_funct3==3'b000 || id_funct3==3'b001 || id_funct3==3'b010;
+    // Check the complete supported 32-bit instruction encoding, rather than
+    // letting the legacy decoder quietly treat reserved encodings as NOPs.
+    // RV32I SYSTEM, FENCE and privileged instructions remain unsupported.
+    reg id_legal;
+    always @* begin
+        id_legal = 1'b0;
+        case (id_opcode)
+            7'h33: begin // OP: only ADD/SUB and SRL/SRA permit funct7=0100000.
+                if (id_funct3 == 3'b000 || id_funct3 == 3'b101)
+                    id_legal = if_id_instr[31:25] == 7'b0000000 ||
+                               if_id_instr[31:25] == 7'b0100000;
+                else
+                    id_legal = if_id_instr[31:25] == 7'b0000000;
+            end
+            7'h13: begin // OP-IMM: exact upper immediate bits for shifts.
+                if (id_funct3 == 3'b001)
+                    id_legal = if_id_instr[31:25] == 7'b0000000;
+                else if (id_funct3 == 3'b101)
+                    id_legal = if_id_instr[31:25] == 7'b0000000 ||
+                               if_id_instr[31:25] == 7'b0100000;
+                else
+                    id_legal = 1'b1;
+            end
+            7'h03: id_legal = id_load_supported;
+            7'h23: id_legal = id_store_supported;
+            7'h63: id_legal = id_funct3 == 3'b000 || id_funct3 == 3'b001 ||
+                              id_funct3 == 3'b100 || id_funct3 == 3'b101 ||
+                              id_funct3 == 3'b110 || id_funct3 == 3'b111;
+            7'h67: id_legal = id_funct3 == 3'b000;
+            7'h37, 7'h17, 7'h6f: id_legal = 1'b1;
+            default: id_legal = 1'b0;
+        endcase
+    end
     wire id_reg_write = if_id_valid && ((cu_reg_write && (id_opcode!=7'h03 || id_load_supported)) ||
                                         id_is_lui || id_is_auipc || id_is_jal || id_is_jalr);
     wire id_mem_read = if_id_valid && cu_mem_read && id_load_supported;
@@ -147,6 +188,8 @@ module pipeline_core #(
 
     reg id_ex_valid;
     reg [31:0] id_ex_pc, id_ex_rd1, id_ex_rd2, id_ex_imm;
+    reg [31:0] id_ex_instr;
+    reg id_ex_illegal;
     reg [4:0] id_ex_rs1, id_ex_rs2, id_ex_rd;
     reg [2:0] id_ex_funct3;
     reg [3:0] id_ex_alu_op;
@@ -206,12 +249,51 @@ module pipeline_core #(
     // B/J immediates already contain the low zero bit: never shift again.
     wire [31:0] redirect_target = id_ex_is_jalr ?
         ((forward_a + id_ex_imm) & 32'hffff_fffe) : id_ex_pc + id_ex_imm;
+    wire [1:0] ex_mem_lane = ex_alu_result[1:0];
+    wire ex_bad_align = (id_ex_is_load || id_ex_is_store) &&
+        (((id_ex_funct3 == 3'b001 || id_ex_funct3 == 3'b101) && ex_mem_lane[0]) ||
+         (id_ex_funct3 == 3'b010 && ex_mem_lane != 0));
+    wire ex_bad_range = (id_ex_is_load || id_ex_is_store) && |ex_alu_result[31:12];
+    wire ex_target_bad = redirect && redirect_target[1:0] != 2'b00;
+    // Observe faults at EX, after any older memory operation drains. This
+    // makes fault reporting precise without ever issuing the invalid D access.
+    wire fault_event = FAULT_HALT && !fault_valid && id_ex_valid && !mem_hold &&
+                       (id_ex_illegal || ex_bad_align || ex_bad_range || ex_target_bad);
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            fault_valid <= 0;
+            fault_cause <= 0;
+            fault_pc <= 0;
+            fault_tval <= 0;
+        end else if (fault_event) begin
+            fault_valid <= 1;
+            fault_pc <= id_ex_pc;
+            if (id_ex_illegal) begin
+                fault_cause <= 32'd2;
+                fault_tval <= id_ex_instr;
+            end else if (ex_bad_align) begin
+                fault_cause <= id_ex_is_store ? 32'd6 : 32'd4;
+                fault_tval <= ex_alu_result;
+            end else if (ex_bad_range) begin
+                fault_cause <= id_ex_is_store ? 32'd7 : 32'd5;
+                fault_tval <= ex_alu_result;
+            end else begin
+                fault_cause <= 32'd0;
+                fault_tval <= redirect_target;
+            end
+        end
+    end
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pc <= 0;
             if_id_pc <= 0;
             if_id_instr <= 0;
             if_id_valid <= 0;
+        end else if (fault_event || fault_valid) begin
+            // Stop fetch progression and discard younger prefetched work;
+            // the exact faulting instruction PC is latched from ID/EX.
+            if_id_valid <= 0;
+            if_id_instr <= 0;
         end else if (mem_hold) begin
             // Older data-memory operation blocks any younger redirect or fetch.
         end else if (redirect) begin
@@ -241,6 +323,7 @@ module pipeline_core #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             id_ex_valid <= 0;
+            id_ex_instr <= 0; id_ex_illegal <= 0;
             id_ex_pc <= 0; id_ex_rd1 <= 0; id_ex_rd2 <= 0; id_ex_imm <= 0;
             id_ex_rs1 <= 0; id_ex_rs2 <= 0; id_ex_rd <= 0; id_ex_funct3 <= 0;
             id_ex_alu_op <= 0; id_ex_reg_write <= 0;
@@ -252,8 +335,9 @@ module pipeline_core #(
             // operands in a held ID/EX so forwarding is not lost when WB drains.
             if (rf_we && rf_wr == id_ex_rs1) id_ex_rd1 <= rf_wd;
             if (rf_we && rf_wr == id_ex_rs2) id_ex_rd2 <= rf_wd;
-        end else if (redirect || stall) begin
+        end else if (fault_event || fault_valid || redirect || stall) begin
             id_ex_valid <= 0;
+            id_ex_instr <= 0; id_ex_illegal <= 0;
             id_ex_pc <= 0; id_ex_rd1 <= 0; id_ex_rd2 <= 0; id_ex_imm <= 0;
             id_ex_rs1 <= 0; id_ex_rs2 <= 0; id_ex_rd <= 0; id_ex_funct3 <= 0;
             id_ex_alu_op <= 0; id_ex_reg_write <= 0;
@@ -262,6 +346,8 @@ module pipeline_core #(
             id_ex_is_jal <= 0; id_ex_is_jalr <= 0;
         end else begin
             id_ex_valid <= if_id_valid;
+            id_ex_instr <= if_id_instr;
+            id_ex_illegal <= if_id_valid && !id_legal;
             id_ex_pc <= if_id_pc; id_ex_rd1 <= id_value1; id_ex_rd2 <= id_value2;
             id_ex_imm <= id_imm; id_ex_rs1 <= id_rs1; id_ex_rs2 <= id_rs2;
             id_ex_rd <= id_rd; id_ex_funct3 <= id_funct3;
@@ -279,6 +365,13 @@ module pipeline_core #(
             ex_mem_write_data_reg <= 0; ex_mem_rd <= 0;
             ex_mem_reg_write <= 0; ex_mem_is_load <= 0; ex_mem_is_store <= 0;
             ex_mem_funct3 <= 0;
+        end else if (fault_event || fault_valid) begin
+            // The older EX/MEM instruction still flows to WB this cycle; the
+            // faulting EX instruction itself must never reach MEM.
+            ex_mem_valid <= 0;
+            ex_mem_reg_write <= 0;
+            ex_mem_is_load <= 0;
+            ex_mem_is_store <= 0;
         end else if (mem_hold) begin
             // A response completes exactly one outstanding operation. Vacate
             // EX/MEM but preserve younger ID/EX for the following cycle so a
@@ -398,6 +491,10 @@ module pipeline_core #(
             mem_wb_valid <= 0; mem_wb_alu_res <= 0;
             mem_wb_mem_read_data <= 0; mem_wb_rd <= 0;
             mem_wb_reg_write <= 0; mem_wb_is_load <= 0;
+        end else if (fault_valid) begin
+            // One older non-memory instruction may have reached WB on the
+            // preceding fault edge; let it commit exactly once, then drain.
+            mem_wb_valid <= 0;
         end else if (mem_hold) begin
             mem_wb_valid <= mem_rsp_valid && ex_mem_valid;
             mem_wb_alu_res <= ex_mem_alu_res;

@@ -40,4 +40,6 @@ echo '--- latency-aware memory and independent reference regressions ---'
 bash "$root/scripts/run_memory_regression.sh" "$output/memory"
 echo '--- independently timed external instruction/data interfaces ---'
 bash "$root/scripts/run_external_regression.sh" "$output/external"
+echo '--- opt-in precise fault-stop diagnostics ---'
+bash "$root/scripts/run_fault_halt_regression.sh" "$output/fault_halt"
 echo "Evidence and logs: $output"

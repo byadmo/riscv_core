@@ -15,9 +15,9 @@ This table reports **tested behaviour**, not exhaustive formal coverage or an of
 | EX/MEM before MEM/WB, WB/ID and held-ID/EX refresh | Directed; exercised randomly | Baseline forwarding program, latency stress |
 | Memory latency, single outstanding and store exactly once | Directed + deterministic variation | `DATA_LATENCY=1,2,4`, `DATA_MAX_EXTRA=0,3`; cardinality assertions |
 | Reset cancels pending store | Directed | Reset during a pending store and fresh post-reset program |
-| Invalid alignment or address >4 KiB | Explicitly rejected in simulation | Four negative expected-$fatal cases |
+| Invalid alignment or address >4 KiB (default `FAULT_HALT=0`) | Explicitly rejected in simulation | Four negative expected-$fatal cases |
 | CSR, privileged ISA, exceptions, interrupts, `ECALL`, `EBREAK`, `FENCE` | **Unsupported** | No trap/CSR pipeline |
-| Complete instruction-encoding legality validation | **Unsupported** | Some illegal variants may be ignored; no compliance claim |
+| Unsupported/illegal encoding detection | Opt-in `FAULT_HALT=1` for implemented RV32I subset | Reserved funct7, shifts, widths and control encodings checked; not full ISA compliance |
 | Instruction bus stalls / cache misses | **Unsupported** | Instruction memory remains zero-wait |
 | Multiple outstanding or reordered responses | **Unsupported** | Single-outstanding RAM model only |
 | Independent response backpressure (`rsp_ready`), external AXI | **Unsupported** | Response consumed immediately |
@@ -46,3 +46,20 @@ The directed architectural testbench checks all 32 registers and 1,024 memory wo
 The new external directed suite executes **7 scenarios × 6 timing configurations = 42 program runs**, checking all 32 integer registers and 1,024 data-memory words per run (**44,352 state comparisons**). The external independently interpreted suite executes **3 seeds × 4 configurations = 12 runs** with **12,672 comparisons**, plus two expected identity-fault rejections. These are *additional* to the previous 38,016 directed internal-latency comparisons and 12,672 internal-reference comparisons. These counts are not formal coverage metrics.
 
 Not verified: zero-cycle external response, independent reset domains, response reordering, multiple outstanding requests on a channel, external instruction/data coherence under self-modifying code, ISA exception/trap recovery, privileged/system instructions, hardware synthesis or physical timing.
+
+## Precise fault-stop diagnostics (new opt-in suite)
+
+`pipeline_core #(.FAULT_HALT(1))` exposes sticky `fault_valid/fault_cause/fault_pc/fault_tval` and halts after synchronously detecting a supported fault in EX. The core does **not** implement trap handlers, CSRs or privilege. See [`docs/fault_halt.md`](fault_halt.md).
+
+| Scenario | Test evidence |
+| --- | --- |
+| Illegal opcode and reserved R/shift/load function encodings | Exact cause `2`, offending PC/instruction word, no younger commits |
+| Misaligned LH/LW/SH/SW | Causes `4` / `6` and exact effective address; invalid D request never issued |
+| Modeled 4 KiB load/store out-of-range | Causes `5` / `7`; these are local range rejections, **not** external bus response errors |
+| Misaligned taken BEQ, JAL and JALR targets | Cause `0`, exact target PC; faulting jump link write suppressed |
+| Wrong-path invalid instructions and control transfers | Fault is suppressed after an older taken redirect |
+| Older store and older load/writeback preceding illegal instruction | Exact one-time older effects, faulting/younger effects suppressed |
+| Reset and sticky outputs | Cleared by reset, stable during halt; subsequent program starts normally |
+| Legacy default compatibility | Four existing invalid memory accesses still terminate by expected `$fatal` |
+
+The new runner executes **15 scenarios × 6 configurations = 90 programs**, including 72 deliberately faulting programs and 18 no-fault programs, comparing **32 registers + 1,024 modeled memory words per case = 95,040 state comparisons**. The six configurations include three internal data-memory latency modes and three externally timed dual-port modes with request acceptance/backpressure and CPU response holds. Four default-mode expected rejection tests are separate. These are repeated complete-state comparisons, **not** unique instruction coverage or formal proof.

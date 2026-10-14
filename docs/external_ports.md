@@ -25,8 +25,8 @@ The data side retains EX/MEM address, store payload, destination and control unt
 
 ## Errors and unsupported features
 
-- Instruction requests must be word-aligned within the supported modeled fetch address space. A physical instruction access-fault handler, traps, privilege, CSRs and ISA exception recovery are not implemented.
-- The data interface preserves little-endian `LB/LBU/LH/LHU/LW/SB/SH/SW` semantics. Subword size/alignment is validated in simulation, and unsupported misalignment/out-of-range accesses are rejected via `$fatal`, **not** RISC-V architectural traps.
+- Instruction requests must be word-aligned within the supported modeled fetch address space. A physical instruction access-fault handler, privileged traps, CSRs and ISA exception recovery are not implemented.
+- The data interface preserves little-endian `LB/LBU/LH/LHU/LW/SB/SH/SW` semantics. With default `FAULT_HALT=0`, invalid data alignment/range causes a simulator `$fatal`. Opt-in `FAULT_HALT=1` provides **precise, sticky fault-stop outputs** before an invalid request is issued; this is not a recoverable RISC-V trap. See [fault diagnostics](fault_halt.md).
 - Memory mapping, MMIO, external bus arbitration, multi-beat accesses, atomics, fences, cache coherence and two or more outstanding requests per channel are unsupported.
 - A valid response must eventually be presented by the memory. No deadlock-free guarantee can be made when the external environment withholds response forever.
 - There is no synthesis/FPGA, physical SRAM timing, area, power, maximum clock or full RV32I compliance claim.

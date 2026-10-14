@@ -1,6 +1,6 @@
-# RV32I pipelined processor — latency-aware memory milestone
+# RV32I pipelined processor — external memory and fault diagnostics
 
-This repository contains an experimental 32-bit RISC-V processor project. **The verified integration target is `rtl/pipeline_core.sv`, a five-stage in-order RV32I-subset core.** The original integrated and variable-latency *internal* data-memory regressions remain supported. A newer `EXTERNAL_PORTS=1` configuration decouples both instruction and data paths through independent ready/valid request/response channels with per-transaction 8-bit tags and explicit response backpressure. This is an educational simulation milestone, not full ISA compliance, synthesis or FPGA hardware.
+This repository contains an experimental 32-bit RISC-V processor project. **The verified integration target is `rtl/pipeline_core.sv`, a five-stage in-order RV32I-subset core.** The original integrated and variable-latency *internal* data-memory regressions remain supported. A newer `EXTERNAL_PORTS=1` configuration decouples both instruction and data paths through independent ready/valid request/response channels with per-transaction 8-bit tags and explicit response backpressure. An additional opt-in `FAULT_HALT=1` mode captures precise fault diagnostics and stops execution without corrupting older architectural state. This is an educational simulation milestone, not full ISA compliance, a privileged trap handler, synthesis or FPGA hardware.
 
 ## Run the tests
 
@@ -10,7 +10,7 @@ Install Icarus Verilog 12 or compatible. From the repository root:
 bash scripts/run_regression.sh
 ```
 
-The script preserves three standalone benches (ALU, register-file, control-unit), four existing architectural instruction programs and an independent control-flow program. It additionally runs **36 latency-controlled directed cases**, **12 deterministic reference-interpreted random-program executions**, and **four expected-failure memory access tests**, followed by an independent I/D-interface regression. All passing program benches assert architectural results and exit nonzero on mismatch. They compile the exact verified pipeline modules, not legacy incompatible top-level experiments.
+The script preserves three standalone benches (ALU, register-file, control-unit), four existing architectural instruction programs and an independent control-flow program. It additionally runs **36 latency-controlled directed cases**, **12 deterministic reference-interpreted random-program executions**, and **four expected-failure memory access tests**, followed by independent I/D-interface and opt-in fault-stop regressions. All passing program benches assert architectural results and exit nonzero on mismatch. They compile the exact verified pipeline modules, not legacy incompatible top-level experiments.
 
 Pass an explicit output directory to preserve VCDs and per-test logs:
 
@@ -33,6 +33,18 @@ The `EXTERNAL_PORTS=1` mode exposes **two independent single-outstanding memory 
 The expanded external regression executes **42 directed program cases (44,352 complete register/data-memory comparisons)**, **12 independently interpreted Python-reference executions (12,672 comparisons)** and **two intentionally corrupted response-tag cases that must terminate with an identity error**. A 300-redirect loop and an additional 301-instruction sequence exercise fetch epoch/tag rollover. The six timing configurations independently vary I and D response latency, request acceptance and CPU response readiness. Captured `external_bus.vcd` is sampled into a source-backed waveform illustration with `scripts/vcd_external_to_svg.py`.
 
 External mode is **not** an AXI controller, physical SRAM interface, a cache, a fault-recovery engine or full RV32I implementation. The educational default mode remains available for regression compatibility; its internal memory arrays do not supply the external core's instruction/data reads.
+
+## Precise fault-stop diagnostic mode (opt-in)
+
+Set `FAULT_HALT=1` in `pipeline_core` to enable latched `fault_valid`, `fault_cause`, `fault_pc` and `fault_tval` outputs. The core detects illegal or unsupported instruction encodings, misaligned taken control-flow targets, misaligned load/store addresses and data accesses outside its modeled 4 KiB RAM, then stops subsequent execution. Invalid stores never reach either memory interface; older memory transactions and writebacks finish before the fault becomes observable. Default `FAULT_HALT=0` retains the original behaviour and expected `$fatal` negative tests.
+
+**This is fault containment/diagnostics, not a privileged RISC-V exception/trap implementation.** There is no `mtvec`, `mepc`, `mcause`, `MRET`, exception handler, `ECALL` support, privilege model or asynchronous interrupt handling. Numeric cause codes are borrowed from the RISC-V exception list only to identify fault types; local 4 KiB modeled address-range errors are not external bus faults. See [docs/fault_halt.md](docs/fault_halt.md) for exact semantics, limitations, test cases and replay commands.
+
+```sh
+bash scripts/run_fault_halt_regression.sh /tmp/rv32i-fault-halt
+```
+
+Six simulated timing configurations (three internal and three independent external I/D) each execute **12 fault and 3 non-fault programs**, giving **90 passing scenarios and 95,040 complete architectural register/memory checks**. Every program checks all 32 registers and all 1,024 modeled data-memory words; 4 additional legacy expected-fatal rejection tests preserve default-mode compatibility. The new suite checks precise cause/PC/value, older store/writeback completion, wrong-path rejection, no invalid data transaction, sticky reporting and reset. These checks are not formal verification or full ISA compliance.
 
 For memory-only verification:
 
@@ -64,8 +76,8 @@ New directed memory tests check **38,016 state values** (six independently reset
 
 ## Important limitations
 
-This is a **simulation-stage milestone**, not an RV32I compliance claim. The default mode uses internal behavioural memory with a single outstanding data request; external mode adds separately driven **I and D** ready/valid channels with response-ready backpressure and explicit tags. Neither mode implements AXI, an external SRAM macro, architectural traps/fault recovery, CSR/interrupts, MMIO, `FENCE`, or full encoding legality. External bus simulations use 4 KiB memories and reject unsupported alignment/range in simulation. The processor has no formal-compliance proof, synthesis, STA, FPGA results or power/performance measurements.
+This is a **simulation-stage milestone**, not an RV32I compliance claim. The default mode uses internal behavioural memory with a single outstanding data request; external mode adds separately driven **I and D** ready/valid channels with response-ready backpressure and explicit tags. Neither mode implements AXI, an external SRAM macro, architectural privilege/trap recovery, CSR/interrupts, MMIO or `FENCE`. The optional diagnostic mode checks encodings for the supported subset, not the entire ISA or architectural instruction-fetch faults. External bus simulations use 4 KiB memories; invalid data accesses are rejected via historical `$fatal` in default mode or stopped before issuance in `FAULT_HALT=1`. The processor has no formal-compliance proof, synthesis, STA, FPGA results or power/performance measurements.
 
 Other historical experiments including `rtl/core_top.sv`, `rtl/riscv_top.sv` and `src/cpu.sv` remain in the repository for reference but are **not** included in the validated integrated build; their old benches and scripts must not be mistaken for passing CPU regressions.
 
-Future work: make the data port an independently supplied external ready/valid bus with variable request-ready and response-ready behavior, introduce a proper fault/trap path, add instruction-memory stalls, strengthen instruction legality checks, run ISA compliance and formal properties, then investigate synthesis and eventual FPGA deployment.
+Future work: upgrade the opt-in fail-stop reporting to an actual architectural trap handler with readable CSRs and `MRET`, complete instruction-fetch/access faults and external fault responses, test ISA compliance and formal properties, then investigate synthesis and eventual FPGA deployment.
