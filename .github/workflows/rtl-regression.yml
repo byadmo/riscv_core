@@ -23,3 +23,37 @@ jobs:
         run: python3 --version
       - name: Run standalone and integrated self-checking tests
         run: bash scripts/run_regression.sh
+  windows-powershell:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Exercise native Windows paths with spaces, not only a POSIX checkout.
+          path: 'rtl regression workspace'
+      - name: Install MSYS2, Python and native Icarus Verilog
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            python
+            mingw-w64-ucrt-x86_64-iverilog
+      - name: Run real Windows PowerShell entrypoint
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msysRoot = '${{ steps.msys2.outputs.msys2-location }}'
+          $env:PATH = (Join-Path $msysRoot 'ucrt64\bin') + ';' +
+                      (Join-Path $msysRoot 'usr\bin') + ';' + $env:PATH
+          foreach ($binary in @('bash', 'cygpath', 'iverilog', 'vvp', 'python3')) {
+            if (-not (Get-Command $binary -ErrorAction SilentlyContinue)) {
+              throw "Missing native Windows regression dependency: $binary"
+            }
+          }
+          $workspace = Join-Path $env:GITHUB_WORKSPACE 'rtl regression workspace'
+          if (-not (Test-Path -LiteralPath (Join-Path $workspace 'scripts\run_all_tests.ps1'))) {
+            throw "Checkout with spaces not found: $workspace"
+          }
+          & (Join-Path $workspace 'scripts\run_all_tests.ps1')

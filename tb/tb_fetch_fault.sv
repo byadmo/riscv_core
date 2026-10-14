@@ -290,6 +290,10 @@ module tb_fetch_fault #(
                 $fatal(1,"%0s fault was not sticky after drain",case_name);
             check_arch();
             check_transactions(dcount,1);
+            if (EXTERNAL_MODE && dcount>0 &&
+                DATA_RESPONSE_DELAY>=D_LATENCY+D_JITTER+2 && held_d<1)
+                $fatal(1,"%0s expected a held external D response, observed none",
+                       case_name);
             if (EXTERNAL_MODE && d_req_valid)
                 $fatal(1,"%0s new D request after sticky halt",case_name);
             cases_passed=cases_passed+1; fault_cases=fault_cases+1;
@@ -324,6 +328,10 @@ module tb_fetch_fault #(
                        case_name);
             check_arch();
             check_transactions(dcount,1);
+            if (EXTERNAL_MODE && dcount>0 &&
+                DATA_RESPONSE_DELAY>=D_LATENCY+D_JITTER+2 && held_d<1)
+                $fatal(1,"%0s expected a held external D response, observed none",
+                       case_name);
             cases_passed=cases_passed+1; valid_cases=valid_cases+1;
             $display("PASS fetch-valid ext=%0d %-42s marker=%0d cycles=%0d Iheld=%0d Dheld=%0d",
                      EXTERNAL_MODE,case_name,marker,cycles,held_i,held_d);
