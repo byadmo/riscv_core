@@ -3,17 +3,94 @@
 // Integrated five-stage educational RV32I-subset core.
 // Pipeline: IF -> ID -> EX -> MEM -> WB.
 // Data memory uses a single-outstanding synchronous request/response model.
-// Instruction memory is still a zero-wait-state word array.
+// Default educational mode keeps the original self-contained memories.
+// EXTERNAL_PORTS=1 disconnects both arrays from the datapath and exposes
+// independent, single-outstanding I and D request/response channels.
 module pipeline_core #(
     parameter integer DATA_LATENCY = 1,
-    parameter integer DATA_MAX_EXTRA = 0
-)(input wire clk, input wire rst_n);
+    parameter integer DATA_MAX_EXTRA = 0,
+    parameter integer EXTERNAL_PORTS = 0,
+    parameter integer DATA_RESPONSE_DELAY = 0
+)(
+    input wire clk, input wire rst_n,
+    output wire i_req_valid, input wire i_req_ready,
+    output wire [31:0] i_req_addr,
+    output wire [7:0] i_req_tag,
+    input wire i_rsp_valid, output wire i_rsp_ready,
+    input wire [31:0] i_rsp_addr, input wire [7:0] i_rsp_tag,
+    input wire [31:0] i_rsp_data,
+    output wire d_req_valid, input wire d_req_ready,
+    output wire d_req_write, output wire [31:0] d_req_addr,
+    output wire [7:0] d_req_tag,
+    output wire [31:0] d_req_wdata, output wire [3:0] d_req_wstrb,
+    input wire d_rsp_valid, output wire d_rsp_ready,
+    input wire [7:0] d_rsp_tag,
+    input wire [31:0] d_rsp_rdata
+);
     reg [31:0] imem [0:1023];
 
     reg [31:0] pc;
     reg [31:0] if_id_pc, if_id_instr;
     reg if_id_valid;
     wire [31:0] if_instr = imem[pc[11:2]];
+    // External fetch: only one request may be outstanding. Returned words are
+    // buffered until decode can advance. Redirect increments an epoch so an
+    // obsolete request can be drained without ever entering the pipeline.
+    reg if_pending, if_buffer_valid, if_request_waiting;
+    reg [31:0] if_pending_pc, if_buffer_instr, if_request_pc;
+    reg [7:0] if_pending_tag, fetch_epoch, if_request_tag;
+    wire if_old_request = if_pending && if_pending_tag != fetch_epoch;
+    // Queue even before acceptance so valid/address/tag cannot change when
+    // !req_ready. Redirect makes such a queued request stale, but it must
+    // still be accepted and drained unless the bus offers cancellation.
+    assign i_req_valid = EXTERNAL_PORTS && rst_n && if_request_waiting;
+    assign i_req_addr = if_request_pc;
+    assign i_req_tag = if_request_tag;
+    assign i_rsp_ready = EXTERNAL_PORTS && rst_n && if_pending &&
+                         !if_buffer_valid && (!mem_hold || if_old_request);
+    wire fetch_accept = i_req_valid && i_req_ready;
+    wire fetch_response = i_rsp_valid && i_rsp_ready;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            if_pending <= 0; if_buffer_valid <= 0;
+            if_pending_pc <= 0; if_buffer_instr <= 0;
+            if_pending_tag <= 0; fetch_epoch <= 0;
+            if_request_waiting <= 0; if_request_pc <= 0;
+            if_request_tag <= 0;
+        end else if (EXTERNAL_PORTS) begin
+            if (!if_pending && !if_buffer_valid && !if_request_waiting &&
+                !redirect && !mem_hold) begin
+                if_request_waiting <= 1;
+                if_request_pc <= pc;
+                if_request_tag <= fetch_epoch;
+            end
+            if (redirect) begin
+                fetch_epoch <= fetch_epoch + 1'b1;
+                if_buffer_valid <= 0;
+            end else if (!mem_hold && !stall && if_buffer_valid)
+                if_buffer_valid <= 0;
+            if (fetch_accept) begin
+                if_request_waiting <= 0;
+                if_pending <= 1;
+                if_pending_pc <= i_req_addr;
+                if_pending_tag <= i_req_tag;
+            end
+            if (fetch_response) begin
+                if_pending <= 0;
+                if (!redirect && !if_old_request) begin
+                    if_buffer_valid <= 1;
+                    if_buffer_instr <= i_rsp_data;
+                end
+            end
+        end
+    end
+`ifndef SYNTHESIS
+    always @(posedge clk)
+        if (rst_n && EXTERNAL_PORTS && fetch_response &&
+            (i_rsp_addr !== if_pending_pc || i_rsp_tag !== if_pending_tag))
+            $fatal(1,"Instruction response identity mismatch: expected PC=%08h tag=%0d, actual PC=%08h tag=%0d",
+                   if_pending_pc,if_pending_tag,i_rsp_addr,i_rsp_tag);
+`endif
     wire [6:0] id_opcode = if_id_instr[6:0];
     wire [2:0] id_funct3 = if_id_instr[14:12];
     wire [4:0] id_rs1 = if_id_instr[19:15];
@@ -143,10 +220,19 @@ module pipeline_core #(
             if_id_instr <= 0;
             if_id_valid <= 0;
         end else if (!stall) begin
-            pc <= pc + 32'd4;
-            if_id_pc <= pc;
-            if_id_instr <= if_instr;
-            if_id_valid <= 1;
+            if (EXTERNAL_PORTS) begin
+                if_id_valid <= if_buffer_valid;
+                if (if_buffer_valid) begin
+                    pc <= pc + 32'd4;
+                    if_id_pc <= pc;
+                    if_id_instr <= if_buffer_instr;
+                end
+            end else begin
+                pc <= pc + 32'd4;
+                if_id_pc <= pc;
+                if_id_instr <= if_instr;
+                if_id_valid <= 1;
+            end
         end
     end
 
@@ -216,9 +302,55 @@ module pipeline_core #(
     end
     wire mem_op = ex_mem_valid && (ex_mem_is_load || ex_mem_is_store);
     wire mem_hold = mem_op;
-    wire mem_req_valid = mem_op;
-    wire mem_req_ready, mem_rsp_valid;
-    wire [31:0] mem_rsp_rdata;
+    reg mem_issued;
+    reg [7:0] next_data_tag, data_outstanding_tag;
+    // DATA_RESPONSE_DELAY intentionally makes the core deassert response
+    // readiness for bounded cycles, exercising held external responses.
+    localparam integer DCW = DATA_RESPONSE_DELAY > 0 ? $clog2(DATA_RESPONSE_DELAY+2) : 1;
+    reg [DCW-1:0] data_response_wait;
+    assign d_req_valid = EXTERNAL_PORTS && rst_n && mem_op && !mem_issued;
+    assign d_req_write = ex_mem_is_store;
+    assign d_req_addr = ex_mem_alu_res;
+    assign d_req_tag = next_data_tag;
+    assign d_req_wdata = mem_store_data;
+    assign d_req_wstrb = mem_store_strb;
+    assign d_rsp_ready = EXTERNAL_PORTS && rst_n && mem_op && mem_issued &&
+                          data_response_wait >= DATA_RESPONSE_DELAY;
+    wire d_req_fire = d_req_valid && d_req_ready;
+    wire d_rsp_fire = d_rsp_valid && d_rsp_ready;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            mem_issued <= 0;
+            data_response_wait <= 0;
+            next_data_tag <= 0;
+            data_outstanding_tag <= 0;
+        end else if (EXTERNAL_PORTS) begin
+            if (d_req_fire) begin
+                mem_issued <= 1;
+                data_outstanding_tag <= d_req_tag;
+                next_data_tag <= next_data_tag + 1'b1;
+                data_response_wait <= 0;
+            end else if (mem_issued && mem_op && !d_rsp_fire) begin
+                if (data_response_wait < DATA_RESPONSE_DELAY)
+                    data_response_wait <= data_response_wait + 1'b1;
+            end
+            if (d_rsp_fire) begin
+                mem_issued <= 0;
+                data_response_wait <= 0;
+            end
+        end
+    end
+`ifndef SYNTHESIS
+    always @(posedge clk)
+        if (rst_n && EXTERNAL_PORTS && d_rsp_fire && d_rsp_tag !== data_outstanding_tag)
+            $fatal(1,"Data response tag mismatch: expected %0d actual %0d",
+                   data_outstanding_tag,d_rsp_tag);
+`endif
+    wire mem_req_valid = mem_op && !EXTERNAL_PORTS;
+    wire mem_req_ready, model_rsp_valid;
+    wire [31:0] model_rsp_rdata;
+    wire mem_rsp_valid = EXTERNAL_PORTS ? d_rsp_fire : model_rsp_valid;
+    wire [31:0] mem_rsp_rdata = EXTERNAL_PORTS ? d_rsp_rdata : model_rsp_rdata;
     wire [1:0] mem_lane = ex_mem_alu_res[1:0];
     wire [4:0] mem_shift = {mem_lane,3'b000};
     wire [31:0] mem_store_data = ex_mem_write_data_reg << mem_shift;
@@ -242,8 +374,8 @@ module pipeline_core #(
         .clk(clk), .rst_n(rst_n), .req_valid(mem_req_valid),
         .req_ready(mem_req_ready), .req_write(ex_mem_is_store),
         .req_addr(ex_mem_alu_res), .req_wdata(mem_store_data),
-        .req_wstrb(mem_store_strb), .rsp_valid(mem_rsp_valid),
-        .rsp_rdata(mem_rsp_rdata)
+        .req_wstrb(mem_store_strb), .rsp_valid(model_rsp_valid),
+        .rsp_rdata(model_rsp_rdata)
     );
     // No exception/trap pipeline yet: reject unsupported addresses in
     // simulation rather than aliasing silently to a different word or lane.
@@ -252,7 +384,8 @@ module pipeline_core #(
     wire mem_bad_range = |ex_mem_alu_res[31:12];
 `ifndef SYNTHESIS
     always @(posedge clk)
-        if (rst_n && mem_req_valid && mem_req_ready &&
+        if (rst_n && ((EXTERNAL_PORTS && d_req_fire) ||
+                      (!EXTERNAL_PORTS && mem_req_valid && mem_req_ready)) &&
             (mem_bad_align || mem_bad_range))
             $fatal(1, "Unsupported memory access: address=%08h funct3=%03b align=%b range=%b",
                    ex_mem_alu_res,ex_mem_funct3,mem_bad_align,mem_bad_range);

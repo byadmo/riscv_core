@@ -1,6 +1,6 @@
 # RV32I pipelined processor — latency-aware memory milestone
 
-This repository contains an experimental 32-bit RISC-V processor project. **The verified integration target is `rtl/pipeline_core.sv`, a five-stage in-order RV32I-subset core**, now coupled to a single-outstanding, latency-controlled request/response data-memory module. The result runs real instruction programs in self-checking simulation. It is not fully RV32I-compliant, synthesized or FPGA-deployed.
+This repository contains an experimental 32-bit RISC-V processor project. **The verified integration target is `rtl/pipeline_core.sv`, a five-stage in-order RV32I-subset core.** The original integrated and variable-latency *internal* data-memory regressions remain supported. A newer `EXTERNAL_PORTS=1` configuration decouples both instruction and data paths through independent ready/valid request/response channels with per-transaction 8-bit tags and explicit response backpressure. This is an educational simulation milestone, not full ISA compliance, synthesis or FPGA hardware.
 
 ## Run the tests
 
@@ -10,7 +10,7 @@ Install Icarus Verilog 12 or compatible. From the repository root:
 bash scripts/run_regression.sh
 ```
 
-The script preserves three standalone benches (ALU, register-file, control-unit), four existing architectural instruction programs and an independent control-flow program. It additionally runs **36 latency-controlled directed cases**, **12 deterministic reference-interpreted random-program executions**, and **four expected-failure memory access tests**. All passing program benches assert architectural results and exit nonzero on mismatch. They compile the exact verified pipeline modules, not legacy incompatible top-level experiments.
+The script preserves three standalone benches (ALU, register-file, control-unit), four existing architectural instruction programs and an independent control-flow program. It additionally runs **36 latency-controlled directed cases**, **12 deterministic reference-interpreted random-program executions**, and **four expected-failure memory access tests**, followed by an independent I/D-interface regression. All passing program benches assert architectural results and exit nonzero on mismatch. They compile the exact verified pipeline modules, not legacy incompatible top-level experiments.
 
 Pass an explicit output directory to preserve VCDs and per-test logs:
 
@@ -21,6 +21,18 @@ bash scripts/run_regression.sh /tmp/rv32i-evidence
 ```
 
 The same commands run in GitHub Actions whenever relevant RTL, tests or the runner change. All word memories in the testbenches are initialized by the tests; the CPU's data and instruction memories are currently internal simulation arrays.
+
+## Explicit instruction/data ports
+
+```sh
+bash scripts/run_external_regression.sh /tmp/rv32i-external-evidence
+```
+
+The `EXTERNAL_PORTS=1` mode exposes **two independent single-outstanding memory channels**, with explicit address/tag request acceptance and tagged response validity/readiness. The external test environment `tb/dual_port_bus_adapter.sv` independently delays instruction fetches and data operations, throttles accepted requests and holds responses until the CPU is ready. Its architectural program tests verify registers, memory state, branch redirects, byte lanes, and request/response/store cardinalities. A real two-channel handshake VCD is captured. See [docs/external_ports.md](docs/external_ports.md) for full port names, timing and reset contract.
+
+The expanded external regression executes **42 directed program cases (44,352 complete register/data-memory comparisons)**, **12 independently interpreted Python-reference executions (12,672 comparisons)** and **two intentionally corrupted response-tag cases that must terminate with an identity error**. A 300-redirect loop and an additional 301-instruction sequence exercise fetch epoch/tag rollover. The six timing configurations independently vary I and D response latency, request acceptance and CPU response readiness. Captured `external_bus.vcd` is sampled into a source-backed waveform illustration with `scripts/vcd_external_to_svg.py`.
+
+External mode is **not** an AXI controller, physical SRAM interface, a cache, a fault-recovery engine or full RV32I implementation. The educational default mode remains available for regression compatibility; its internal memory arrays do not supply the external core's instruction/data reads.
 
 For memory-only verification:
 
@@ -52,7 +64,7 @@ New directed memory tests check **38,016 state values** (six independently reset
 
 ## Important limitations
 
-This is a **simulation-stage milestone**, not an RV32I compliance claim. Memory requests and responses use an internal behavioural handshake adapter, **not an external memory controller or AXI bus**. The response is always consumed when valid; there is only one outstanding access and no independent response backpressure. Instruction fetch still uses zero-wait-state array reads. Data accesses outside the modeled 4 KiB or with unsupported alignment explicitly `$fatal` in simulation; **architectural traps or recovery are not implemented**. Illegal instruction encodings, CSRs, interrupts, MMIO, `FENCE` and system instructions remain unsupported. The design has no formal-compliance proof, synthesis, STA, FPGA results or power/performance measurements.
+This is a **simulation-stage milestone**, not an RV32I compliance claim. The default mode uses internal behavioural memory with a single outstanding data request; external mode adds separately driven **I and D** ready/valid channels with response-ready backpressure and explicit tags. Neither mode implements AXI, an external SRAM macro, architectural traps/fault recovery, CSR/interrupts, MMIO, `FENCE`, or full encoding legality. External bus simulations use 4 KiB memories and reject unsupported alignment/range in simulation. The processor has no formal-compliance proof, synthesis, STA, FPGA results or power/performance measurements.
 
 Other historical experiments including `rtl/core_top.sv`, `rtl/riscv_top.sv` and `src/cpu.sv` remain in the repository for reference but are **not** included in the validated integrated build; their old benches and scripts must not be mistaken for passing CPU regressions.
 

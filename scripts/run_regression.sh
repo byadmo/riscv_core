@@ -38,4 +38,6 @@ grep -q '^PASS controlflow:' "$output/controlflow.log"
 echo 'PASS regression: 3 standalone modules + 4 integrated programs + 1 control-flow program'
 echo '--- latency-aware memory and independent reference regressions ---'
 bash "$root/scripts/run_memory_regression.sh" "$output/memory"
+echo '--- independently timed external instruction/data interfaces ---'
+bash "$root/scripts/run_external_regression.sh" "$output/external"
 echo "Evidence and logs: $output"
