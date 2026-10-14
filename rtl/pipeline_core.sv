@@ -39,6 +39,12 @@ module pipeline_core #(
     reg [31:0] pc;
     reg [31:0] if_id_pc, if_id_instr;
     reg if_id_valid, if_id_fetch_fault;
+    // Declare cross-stage controls before any use. In particular, Icarus 13
+    // rejects forward references in net initializers that Icarus 12 accepted.
+    reg if_pending, if_buffer_valid, if_request_waiting;
+    wire stall, redirect, fault_event, mem_hold;
+    wire [31:0] mem_store_data;
+    wire [3:0] mem_store_strb;
     // Never expose aliased internal ROM contents for an invalid fetch PC in
     // diagnostic mode. The actual cause-1 token is supplied separately.
     wire [31:0] if_instr = (FAULT_HALT && |pc[31:12]) ?
@@ -62,7 +68,6 @@ module pipeline_core #(
     // External fetch: only one request may be outstanding. Returned words are
     // buffered until decode can advance. Redirect increments an epoch so an
     // obsolete request can be drained without ever entering the pipeline.
-    reg if_pending, if_buffer_valid, if_request_waiting;
     reg [31:0] if_pending_pc, if_buffer_instr, if_request_pc;
     reg [7:0] if_pending_tag, fetch_epoch, if_request_tag;
     wire if_old_request = if_pending && if_pending_tag != fetch_epoch;
@@ -218,7 +223,7 @@ module pipeline_core #(
 
     // Load in EX produces data only in the next MEM stage. Freeze PC and
     // IF/ID, inject a bubble into ID/EX; ignore unused source-register fields.
-    wire stall = id_ex_valid && id_ex_is_load && id_ex_rd!=0 && (
+    assign stall = id_ex_valid && id_ex_is_load && id_ex_rd!=0 && (
         (id_uses_rs1 && id_ex_rd==id_rs1) || (id_uses_rs2 && id_ex_rd==id_rs2));
     reg ex_mem_valid;
     reg [31:0] ex_mem_alu_res, ex_mem_write_data_reg;
@@ -264,7 +269,7 @@ module pipeline_core #(
             default: branch_condition = 1'b0;
         endcase
     end
-    wire redirect = id_ex_valid && !mem_hold && ((id_ex_is_branch && branch_condition) ||
+    assign redirect = id_ex_valid && !mem_hold && ((id_ex_is_branch && branch_condition) ||
                                     id_ex_is_jal || id_ex_is_jalr);
     // B/J immediates already contain the low zero bit: never shift again.
     wire [31:0] redirect_target = id_ex_is_jalr ?
@@ -277,7 +282,7 @@ module pipeline_core #(
     wire ex_target_bad = redirect && redirect_target[1:0] != 2'b00;
     // Observe faults at EX, after any older memory operation drains. This
     // makes fault reporting precise without ever issuing the invalid D access.
-    wire fault_event = FAULT_HALT && !fault_valid && id_ex_valid && !mem_hold &&
+    assign fault_event = FAULT_HALT && !fault_valid && id_ex_valid && !mem_hold &&
                        (id_ex_fetch_fault || id_ex_illegal || ex_bad_align ||
                         ex_bad_range || ex_target_bad);
     always @(posedge clk or negedge rst_n) begin
@@ -444,7 +449,7 @@ module pipeline_core #(
         end
     end
     wire mem_op = ex_mem_valid && (ex_mem_is_load || ex_mem_is_store);
-    wire mem_hold = mem_op;
+    assign mem_hold = mem_op;
     reg mem_issued;
     reg [7:0] next_data_tag, data_outstanding_tag;
     // DATA_RESPONSE_DELAY intentionally makes the core deassert response
@@ -496,8 +501,8 @@ module pipeline_core #(
     wire [31:0] mem_rsp_rdata = EXTERNAL_PORTS ? d_rsp_rdata : model_rsp_rdata;
     wire [1:0] mem_lane = ex_mem_alu_res[1:0];
     wire [4:0] mem_shift = {mem_lane,3'b000};
-    wire [31:0] mem_store_data = ex_mem_write_data_reg << mem_shift;
-    wire [3:0] mem_store_strb =
+    assign mem_store_data = ex_mem_write_data_reg << mem_shift;
+    assign mem_store_strb =
         ex_mem_funct3==3'b000 ? (4'b0001 << mem_lane) :
         ex_mem_funct3==3'b001 ? (4'b0011 << mem_lane) : 4'b1111;
     // Word memory returns an aligned 32-bit word. Extract requested little-
